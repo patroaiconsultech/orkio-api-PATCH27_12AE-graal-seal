@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "system_name": "Orkio Arcangelic Council",
+  "note": "Scaffold não integrado ao runtime principal nesta rodada de deploy.",
+  "agents": [
+    "orkio",
+    "miguel",
+    "rafael",
+    "gabriel",
+    "metatron",
+    "uriel",
+    "saint_germain"
+  ]
+}

@@ -1,0 +1,440 @@
+{
+  "version": "2.0.0",
+  "system_name": "Orkio CTO Orion Internal Squad",
+  "note": "Pacote declarativo do squad técnico enterprise. Seguro para deploy como scaffold/config. A integração automática ao runtime deve apontar Orion como orquestrador único visível.",
+  "runtime_defaults": {
+    "ORION_SINGLE_VISIBLE_RESPONDER": true,
+    "MAX_PRIMARY_SPECIALISTS": 1,
+    "MAX_SECONDARY_SPECIALISTS": 1,
+    "SECONDARY_SILENT": true,
+    "AUTO_MULTI_AGENT_VISIBLE": false,
+    "PATCH_REQUIRES_QA_VALIDATION": true,
+    "PATCH_REQUIRES_AUDITOR_REVIEW": true,
+    "INCIDENT_FLOW": [
+      "orion_cto",
+      "technical_auditor",
+      "domain_specialist",
+      "qa_test_engineer",
+      "orion_cto"
+    ]
+  },
+  "agents": [
+    {
+      "slug": "orion_cto",
+      "code": "AO-10",
+      "name": "Orion CTO",
+      "role": "orchestrator",
+      "layer": "leadership",
+      "visibility": "user_visible",
+      "can_answer_direct": true,
+      "priority": 100,
+      "activate_when": [
+        "complex_technical_decision",
+        "cross_domain_conflict",
+        "architecture_consolidation",
+        "user_needs_final_answer",
+        "specialist_dispatch_required"
+      ],
+      "silence_when": [
+        "deep_specialist_analysis_in_progress"
+      ],
+      "domain_tags": [
+        "orchestration",
+        "architecture",
+        "dispatch",
+        "consolidation"
+      ]
+    },
+    {
+      "slug": "technical_product_strategist",
+      "code": "AO-18",
+      "name": "Technical Product Strategist",
+      "role": "product_strategist",
+      "layer": "leadership",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 95,
+      "activate_when": [
+        "mvp_vs_enterprise_tradeoff",
+        "roadmap_prioritization",
+        "sequencing_decision"
+      ],
+      "silence_when": [
+        "pure_incident_response"
+      ],
+      "domain_tags": [
+        "roadmap",
+        "prioritization",
+        "tradeoff",
+        "product_strategy"
+      ]
+    },
+    {
+      "slug": "backend_engineer",
+      "code": "AO-11",
+      "name": "Backend Engineer",
+      "role": "technical_specialist",
+      "layer": "core_engineering",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 92,
+      "activate_when": [
+        "/api/chat_failure",
+        "/api/chat/stream_failure",
+        "persistence_issue",
+        "migration_issue",
+        "rbac_server_side",
+        "tenant_resolution_issue"
+      ],
+      "silence_when": [
+        "frontend_only_issue_without_contract_break"
+      ],
+      "domain_tags": [
+        "fastapi",
+        "postgres",
+        "alembic",
+        "rbac",
+        "tenant",
+        "chat_endpoint",
+        "persistence"
+      ]
+    },
+    {
+      "slug": "streaming_engineer",
+      "code": "AO-12",
+      "name": "Streaming Engineer",
+      "role": "technical_specialist",
+      "layer": "core_engineering",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 92,
+      "activate_when": [
+        "sse_hang",
+        "chunk_duplication",
+        "done_out_of_order",
+        "agent_done_duplication",
+        "stream_not_closing"
+      ],
+      "silence_when": [
+        "non_stream_request"
+      ],
+      "domain_tags": [
+        "sse",
+        "chunk",
+        "agent_done",
+        "done",
+        "listeners",
+        "race_condition",
+        "stream_contract"
+      ]
+    },
+    {
+      "slug": "realtime_voice_engineer",
+      "code": "AO-13",
+      "name": "Realtime Voice Engineer",
+      "role": "technical_specialist",
+      "layer": "core_engineering",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 92,
+      "activate_when": [
+        "mic_stuck",
+        "tts_duplicate",
+        "transcript_delta_issue",
+        "transcript_final_missing",
+        "voice_latency"
+      ],
+      "silence_when": [
+        "text_only_incident"
+      ],
+      "domain_tags": [
+        "stt",
+        "tts",
+        "webrtc",
+        "voice_pipeline",
+        "transcript",
+        "mic_state",
+        "playback"
+      ]
+    },
+    {
+      "slug": "frontend_engineer",
+      "code": "AO-14",
+      "name": "Frontend Engineer",
+      "role": "technical_specialist",
+      "layer": "core_engineering",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 92,
+      "activate_when": [
+        "ui_message_duplication",
+        "stage_mode_ui_bug",
+        "orphan_listener",
+        "payload_mismatch",
+        "incremental_render_failure"
+      ],
+      "silence_when": [
+        "backend_confirmed_root_cause_with_intact_contract"
+      ],
+      "domain_tags": [
+        "react",
+        "vite",
+        "appconsole",
+        "listeners",
+        "render",
+        "stage_mode",
+        "team_mode"
+      ]
+    },
+    {
+      "slug": "runtime_openai_engineer",
+      "code": "AO-15",
+      "name": "Runtime OpenAI Engineer",
+      "role": "technical_specialist",
+      "layer": "runtime_security",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 91,
+      "activate_when": [
+        "server_busy",
+        "provider_timeout",
+        "token_overflow",
+        "context_window_issue",
+        "fallback_issue"
+      ],
+      "silence_when": [
+        "provider_not_involved"
+      ],
+      "domain_tags": [
+        "openai",
+        "tokens",
+        "temperature",
+        "timeout",
+        "provider",
+        "fallback",
+        "context_window"
+      ]
+    },
+    {
+      "slug": "security_multi_tenant_engineer",
+      "code": "AO-16",
+      "name": "Security & Multi-Tenant Engineer",
+      "role": "technical_specialist",
+      "layer": "runtime_security",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 96,
+      "activate_when": [
+        "cross_tenant_risk",
+        "authorization_issue",
+        "context_leak",
+        "secret_exposure",
+        "cors_inconsistency"
+      ],
+      "silence_when": [
+        "no_security_surface_involved"
+      ],
+      "domain_tags": [
+        "security",
+        "multi_tenant",
+        "rbac",
+        "cors",
+        "secrets",
+        "authorization",
+        "tenant_isolation"
+      ]
+    },
+    {
+      "slug": "technical_auditor",
+      "code": "AO-01",
+      "name": "Technical Auditor",
+      "role": "auditor",
+      "layer": "quality_reliability",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 97,
+      "activate_when": [
+        "regression_review",
+        "incident_analysis",
+        "pre_deploy_review",
+        "post_patch_review"
+      ],
+      "silence_when": [
+        "execution_only_mode"
+      ],
+      "domain_tags": [
+        "regression",
+        "architecture",
+        "diagnostics",
+        "root_cause",
+        "severity"
+      ]
+    },
+    {
+      "slug": "qa_test_engineer",
+      "code": "AO-19",
+      "name": "QA / Test Engineer",
+      "role": "qa_specialist",
+      "layer": "quality_reliability",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 90,
+      "activate_when": [
+        "new_patch",
+        "new_feature",
+        "stage_mode_change",
+        "voice_pipeline_change",
+        "streaming_change"
+      ],
+      "silence_when": [
+        "diagnostic_only_without_patch"
+      ],
+      "domain_tags": [
+        "qa",
+        "smoke_tests",
+        "regression_tests",
+        "flow_validation",
+        "acceptance"
+      ]
+    },
+    {
+      "slug": "sre_reliability_engineer",
+      "code": "AO-20",
+      "name": "SRE / Reliability Engineer",
+      "role": "reliability_specialist",
+      "layer": "quality_reliability",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 98,
+      "activate_when": [
+        "high_latency",
+        "retry_policy_needed",
+        "sse_hanging",
+        "provider_instability",
+        "healthcheck_inconsistency",
+        "missing_metrics"
+      ],
+      "silence_when": [
+        "local_non_operational_issue"
+      ],
+      "domain_tags": [
+        "sre",
+        "observability",
+        "timeouts",
+        "metrics",
+        "tracing",
+        "reliability",
+        "healthcheck"
+      ]
+    },
+    {
+      "slug": "product_designer",
+      "code": "AO-17",
+      "name": "Product Designer",
+      "role": "ux_specialist",
+      "layer": "product_experience",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 89,
+      "activate_when": [
+        "confusing_stage_mode",
+        "inconsistent_streaming_visuals",
+        "unclear_voice_ui",
+        "perceptive_agent_order_issue"
+      ],
+      "silence_when": [
+        "non_ux_backend_incident"
+      ],
+      "domain_tags": [
+        "ux",
+        "stage_mode",
+        "voice_ui",
+        "streaming_ui",
+        "interaction_model"
+      ]
+    },
+    {
+      "slug": "conversation_designer",
+      "code": "AO-21",
+      "name": "Conversation Designer",
+      "role": "conversation_specialist",
+      "layer": "product_experience",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 88,
+      "activate_when": [
+        "multiple_agents_replying",
+        "verbose_response_issue",
+        "confusing_speaking_order",
+        "inconsistent_tone"
+      ],
+      "silence_when": [
+        "non_conversational_infrastructure_issue"
+      ],
+      "domain_tags": [
+        "conversation",
+        "tone",
+        "agent_behavior",
+        "multi_agent",
+        "response_shape",
+        "turn_taking"
+      ]
+    },
+    {
+      "slug": "agent_systems_architect",
+      "code": "AO-22",
+      "name": "Agent Systems Architect",
+      "role": "agent_architect",
+      "layer": "agent_architecture",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 99,
+      "activate_when": [
+        "stage_mode_wrong",
+        "team_mode_wrong",
+        "multiple_agents_replying",
+        "dispatch_incorrect",
+        "role_conflict"
+      ],
+      "silence_when": [
+        "single_domain_bug_without_agent_coordination"
+      ],
+      "domain_tags": [
+        "agent_architecture",
+        "dispatch",
+        "stage_mode",
+        "team_mode",
+        "priority_rules",
+        "role_boundaries"
+      ]
+    },
+    {
+      "slug": "knowledge_memory_engineer",
+      "code": "AO-23",
+      "name": "Knowledge & Memory Engineer",
+      "role": "memory_specialist",
+      "layer": "knowledge_memory",
+      "visibility": "internal",
+      "can_answer_direct": false,
+      "priority": 93,
+      "activate_when": [
+        "wrong_context",
+        "memory_leak",
+        "agent_forgets_too_much",
+        "rag_inconsistency",
+        "enterprise_document_context_issue"
+      ],
+      "silence_when": [
+        "context_not_involved"
+      ],
+      "domain_tags": [
+        "memory",
+        "rag",
+        "thread_context",
+        "org_context",
+        "agent_context",
+        "knowledge_ingestion"
+      ]
+    }
+  ]
+}
