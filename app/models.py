@@ -516,7 +516,7 @@ class BillingWalletLedger(Base):
     external_ref = Column(String, nullable=True)
     related_checkout_id = Column(String, nullable=True)
     related_tx_id = Column(String, nullable=True)
-    metadata = Column(Text, nullable=True)
+    meta = Column("metadata", Text, nullable=True)
     created_by = Column(String, nullable=True)
     created_at = Column(BigInteger, nullable=False)
 
