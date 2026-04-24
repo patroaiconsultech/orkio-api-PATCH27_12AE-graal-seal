@@ -5889,7 +5889,21 @@ def _github_write_request_flags(user_text: str) -> Dict[str, Any]:
     }
     if not txt:
         return requested
-    requested["create_branch"] = bool(re.search(r"(crie\s+uma\s+branch|create\s+a\s+branch|branch\s+tempor[aá]ria)", low, flags=re.IGNORECASE))
+
+    explicit_branch_req = None
+    try:
+        explicit_branch_req = _extract_github_create_branch_request(txt)
+    except Exception:
+        explicit_branch_req = None
+
+    requested["create_branch"] = bool(
+        re.search(
+            r"(crie\s+.*\bbranch\b|create\s+.*\bbranch\b|branch\s+tempor[aá]ria|github_create_branch|capability\s+github_create_branch|branch\s*:\s*[A-Za-z0-9._/\-]{1,120}|base_branch\s*:\s*[A-Za-z0-9._/\-]{1,120})",
+            txt,
+            flags=re.IGNORECASE,
+        )
+        or explicit_branch_req
+    )
     requested["apply_patch"] = bool(re.search(r"(aplique\s+o\s+patch|aplique\s+essa\s+altera[cç][ãa]o|edite\s+o\s+arquivo|crie\s+o\s+arquivo|fa[cç]a\s+essa\s+altera[cç][ãa]o|apply\s+the\s+patch|write\s+the\s+file)", low, flags=re.IGNORECASE))
     requested["prepare_commit"] = bool(re.search(r"(prepare\s+o\s+commit|preparar\s+commit|commit\s+direto|prepare\s+commit)", low, flags=re.IGNORECASE))
     requested["open_pr"] = bool(re.search(r"(abrir\s+pr|open\s+pr|pull\s+request)", low, flags=re.IGNORECASE))
@@ -6569,14 +6583,17 @@ def _extract_github_create_branch_request(user_text: str) -> Optional[Dict[str, 
     if not txt:
         return None
     low = txt.lower()
-    if "branch" not in low and "ramo" not in low:
+    if "branch" not in low and "ramo" not in low and "github_create_branch" not in low:
         return None
 
     patterns = [
         r"crie uma branch chamada[: ]+([A-Za-z0-9._/\-]{1,120})",
         r"crie a branch[: ]+([A-Za-z0-9._/\-]{1,120})",
+        r"crie no backend a branch[: ]+([A-Za-z0-9._/\-]{1,120})",
+        r"crie no frontend a branch[: ]+([A-Za-z0-9._/\-]{1,120})",
         r"create a branch called[: ]+([A-Za-z0-9._/\-]{1,120})",
         r"create branch[: ]+([A-Za-z0-9._/\-]{1,120})",
+        r"branch\s*:\s*([A-Za-z0-9._/\-]{1,120})",
         r"branch [`']?([A-Za-z0-9._/\-]{1,120})[`']?",
     ]
     branch = ""
@@ -6585,6 +6602,18 @@ def _extract_github_create_branch_request(user_text: str) -> Optional[Dict[str, 
         if m:
             branch = (m.group(1) or "").strip()
             break
+
+    if not branch:
+        # Try structured parameter blocks like:
+        # - repo: backend
+        # - branch: sandbox/sanity-001
+        for raw_line in txt.splitlines():
+            line = str(raw_line or "").strip()
+            m = re.match(r"^-?\s*branch\s*:\s*([A-Za-z0-9._/\-]{1,120})\s*$", line, flags=re.IGNORECASE)
+            if m:
+                branch = (m.group(1) or "").strip()
+                break
+
     if not branch:
         return None
     branch = re.sub(r"^refs/heads/", "", branch.strip())
@@ -12353,9 +12382,18 @@ async def chat_stream(
                 execution_result = None
                 capability_inventory_answer = None
                 should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
+                force_governed_branch_dispatch = False
+                try:
+                    _forced_branch_req = _extract_github_create_branch_request(message)
+                    force_governed_branch_dispatch = bool(
+                        _forced_branch_req
+                        or re.search(r"github_create_branch|capability\s+github_create_branch", message or "", flags=re.IGNORECASE)
+                    )
+                except Exception:
+                    force_governed_branch_dispatch = False
                 if blocked_reply is None:
                     try:
-                        if _is_github_write_request_or_authorization(message):
+                        if force_governed_branch_dispatch or _is_github_write_request_or_authorization(message):
                             capability_inventory_answer = _build_github_write_response_text(
                                 org=org,
                                 thread_id=tid,
