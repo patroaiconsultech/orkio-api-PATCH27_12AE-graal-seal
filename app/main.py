@@ -5897,28 +5897,36 @@ def _is_github_write_request_or_authorization(user_text: str) -> bool:
 
 def _is_github_write_policy_request(user_text: str) -> bool:
     txt = (user_text or "").strip()
-    low = txt.lower()
     if not txt:
         return False
-    if _is_github_write_request_or_authorization(txt):
+    low = txt.lower()
+    if any((
+        "política de escrita github" in low,
+        "politica de escrita github" in low,
+        "github write policy" in low,
+        "/api/agents/github-write-policy" in low,
+        "allow_main_with_approval" in low,
+        "approval_ttl_seconds" in low,
+        "default_mode" in low,
+        "runtime_enabled" in low,
+        "escrita sem autorização" in low,
+        "escrita sem autorizacao" in low,
+        "escrita em main" in low,
+        "write policy" in low and "github" in low,
+    )):
         return True
-    patterns = [
-        r"pol[ií]tica\s+de\s+escrita\s+github",
-        r"pol[ií]tica\s+operacional\s+de\s+escrita",
-        r"mostr[ea]\s+.*pol[ií]tica\s+de\s+escrita",
-        r"github[-\s]?write[-\s]?policy",
-        r"write\s+policy",
-        r"runtime_enabled",
-        r"default_mode",
-        r"allow_main_with_approval",
-        r"approval_ttl_seconds",
-        r"escrita\s+sem\s+autoriza[cç][ãa]o",
-        r"escrita\s+em\s+main",
-        r"allow_main",
-        r"modo\s+de\s+escrita\s+github",
-        r"status\s+de\s+escrita\s+github",
-    ]
-    return any(re.search(p, low, flags=re.IGNORECASE) for p in patterns)
+    field_hits = 0
+    for token in (
+        "runtime_enabled",
+        "default_mode",
+        "allow_main_with_approval",
+        "approval_ttl_seconds",
+        "github-write-policy",
+    ):
+        if token in low:
+            field_hits += 1
+    return field_hits >= 2
+
 
 def _github_write_policy_snapshot(
     *,
@@ -8631,10 +8639,10 @@ def chat(
         should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
         if blocked_reply is None:
             try:
-                if _is_github_write_policy_request(inp.message):
+                if _is_github_write_policy_request(inp.message) or _is_github_write_request_or_authorization(inp.message):
                     capability_inventory_answer = _build_github_write_response_text(
                         org=org,
-                        thread_id=tid,
+                        thread_id=getattr(inp, "thread_id", None),
                         payload=user,
                         user_text=inp.message,
                         db=db,
@@ -12212,7 +12220,7 @@ async def chat_stream(
                 should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
                 if blocked_reply is None:
                     try:
-                        if _is_github_write_policy_request(message):
+                        if _is_github_write_policy_request(message) or _is_github_write_request_or_authorization(message):
                             capability_inventory_answer = _build_github_write_response_text(
                                 org=org,
                                 thread_id=tid,
