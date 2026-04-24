@@ -5701,6 +5701,13 @@ def _is_github_access_request(user_text: str) -> bool:
     txt = (user_text or "").strip().lower()
     if not txt:
         return False
+    # Explicit governed-write requests/authorizations must bypass the generic
+    # runtime inventory/config branch and flow into the governed write handler.
+    try:
+        if _is_github_write_request_or_authorization(user_text):
+            return False
+    except Exception:
+        pass
     patterns = [
         r"acesso .*reposit",
         r"acesso .*github",
@@ -5894,31 +5901,6 @@ def _is_github_write_request_or_authorization(user_text: str) -> bool:
     req = _github_write_request_flags(user_text)
     auth = _github_write_authorization_flags(user_text)
     return bool(req.get("requested") or auth.get("grant") or auth.get("deny_execution"))
-
-def _is_github_write_policy_request(user_text: str) -> bool:
-    txt = (user_text or "").strip()
-    low = txt.lower()
-    if not txt:
-        return False
-    if _is_github_write_request_or_authorization(txt):
-        return True
-    patterns = [
-        r"pol[ií]tica\s+de\s+escrita\s+github",
-        r"pol[ií]tica\s+operacional\s+de\s+escrita",
-        r"mostr[ea]\s+.*pol[ií]tica\s+de\s+escrita",
-        r"github[-\s]?write[-\s]?policy",
-        r"write\s+policy",
-        r"runtime_enabled",
-        r"default_mode",
-        r"allow_main_with_approval",
-        r"approval_ttl_seconds",
-        r"escrita\s+sem\s+autoriza[cç][ãa]o",
-        r"escrita\s+em\s+main",
-        r"allow_main",
-        r"modo\s+de\s+escrita\s+github",
-        r"status\s+de\s+escrita\s+github",
-    ]
-    return any(re.search(p, low, flags=re.IGNORECASE) for p in patterns)
 
 def _github_write_policy_snapshot(
     *,
@@ -7095,13 +7077,21 @@ def _github_verify_branch_exists(repo: str, branch: str) -> tuple[bool, str, Dic
 
 
 def _github_write_runtime_enabled() -> bool:
-    return _env_flag("GITHUB_AUTOMATION_ALLOWED") and _env_flag("AUTO_CODE_EMISSION_ENABLED")
+    # Canonical flag with backward-compatible fallback for older env overlays.
+    return _env_flag("GITHUB_WRITE_RUNTIME_ENABLED", False) or (
+        _env_flag("GITHUB_AUTOMATION_ALLOWED", False)
+        and _env_flag("AUTO_CODE_EMISSION_ENABLED", False)
+    )
 
 def _github_pr_runtime_enabled() -> bool:
-    return _env_flag("GITHUB_PR_RUNTIME_ENABLED") and (_env_flag("AUTO_PR_BACKEND_ENABLED") or _env_flag("AUTO_PR_FRONTEND_ENABLED") or _env_flag("AUTO_PR_WRITE_ENABLED"))
+    return _env_flag("GITHUB_PR_RUNTIME_ENABLED", False) and (
+        _env_flag("AUTO_PR_BACKEND_ENABLED", False)
+        or _env_flag("AUTO_PR_FRONTEND_ENABLED", False)
+        or _env_flag("AUTO_PR_WRITE_ENABLED", False)
+    )
 
 def _github_safe_main_write_allowed() -> bool:
-    return _env_flag("ALLOW_GITHUB_MAIN_DIRECT")
+    return _env_flag("GITHUB_WRITE_ALLOW_MAIN_WITH_APPROVAL", False) or _env_flag("ALLOW_GITHUB_MAIN_DIRECT", False)
 
 def _github_prepare_only_requested(user_text: str) -> bool:
     low = (user_text or "").lower()
@@ -8631,10 +8621,10 @@ def chat(
         should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
         if blocked_reply is None:
             try:
-                if _is_github_write_policy_request(inp.message):
+                if _is_github_write_request_or_authorization(inp.message):
                     capability_inventory_answer = _build_github_write_response_text(
                         org=org,
-                        thread_id=tid,
+                        thread_id=getattr(inp, "thread_id", None),
                         payload=user,
                         user_text=inp.message,
                         db=db,
@@ -12212,7 +12202,7 @@ async def chat_stream(
                 should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
                 if blocked_reply is None:
                     try:
-                        if _is_github_write_policy_request(message):
+                        if _is_github_write_request_or_authorization(message):
                             capability_inventory_answer = _build_github_write_response_text(
                                 org=org,
                                 thread_id=tid,
@@ -12243,10 +12233,10 @@ async def chat_stream(
                                 capability_inventory_answer = _build_capability_inventory_text(db=db, org=org)
                             elif should_execute_runtime:
                                 execution_result = _execute_capability_if_authorized(
-                                message,
-                                trace_id=trace_id,
-                                runtime_enrichment=runtime_enrichment,
-                            )
+                                    message,
+                                    trace_id=trace_id,
+                                    runtime_enrichment=runtime_enrichment,
+                                )
                     except Exception:
                         execution_result = {
                             "handled": True,
