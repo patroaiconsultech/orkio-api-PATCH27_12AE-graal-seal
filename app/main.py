@@ -11078,6 +11078,11 @@ async def chat_stream(
         try:
             stream_history_seed = list(prev_history_seed)
             previous_agent_payload: Optional[Dict[str, Any]] = None
+            final_visible_answer = ""
+            final_visible_agent_id = None
+            final_visible_agent_name = ""
+            final_visible_voice_id = None
+            final_visible_avatar_url = None
             for ag in target_agents:
                 if await request.is_disconnected():
                     return
@@ -11422,6 +11427,11 @@ async def chat_stream(
                     continue
 
                 ans = _apply_truthful_execution_mode((ans_obj.get("text") or "").strip(), execution_result=execution_result)
+                final_visible_answer = ans or final_visible_answer
+                final_visible_agent_id = ag_id
+                final_visible_agent_name = ag_name
+                final_visible_voice_id = ag_voice_id
+                final_visible_avatar_url = ag_avatar_url
 
                 # Persist assistant message (DB path can fail; must rollback)
                 try:
@@ -11632,7 +11642,16 @@ async def chat_stream(
 
             # done global
             try:
-                payload = {"done": True, "thread_id": tid, "trace_id": trace_id}
+                payload = {
+                    "done": True,
+                    "thread_id": tid,
+                    "trace_id": trace_id,
+                    "final_text": final_visible_answer or "",
+                    "agent_id": final_visible_agent_id,
+                    "agent_name": final_visible_agent_name or "",
+                    "voice_id": final_visible_voice_id,
+                    "avatar_url": final_visible_avatar_url,
+                }
                 if final_runtime_enrichment and final_runtime_enrichment.get("runtime_hints"):
                     payload["runtime_hints"] = final_runtime_enrichment.get("runtime_hints")
                 yield sse_execution(
