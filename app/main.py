@@ -10,6 +10,7 @@ import jwt
 from typing import Any, Dict, List, Optional
 
 from app.self_heal.secret_broker import resolve_github_token
+from app.self_heal.credential_scope import control_plane_github_context
 
 from fastapi import FastAPI, Depends, HTTPException, Header, UploadFile, File as UpFile, Request, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -5062,16 +5063,42 @@ def _select_target_agents(
     has_team: bool,
 ) -> List[Any]:
     """Seleciona agentes-alvo de forma determinística.
-    Prioridade: has_team > mentions explícitos > agent_id > default.
+    Prioridade: has_team > mentions explícitos > roteamento semântico > agent_id > default.
     Nunca retorna lista vazia se houver pelo menos 1 agente cadastrado.
     """
     target: List[Any] = []
+    message = str(getattr(inp, "message", "") or "")
+
+    def _append_agent(candidate: Any) -> None:
+        if not candidate:
+            return
+        if candidate.id not in {x.id for x in target if x}:
+            target.append(candidate)
+
+    def _semantic_requested_agents(raw_message: str) -> List[str]:
+        txt = (raw_message or "").strip().lower()
+        if not txt:
+            return []
+        requested: List[str] = []
+        if re.search(r"estrat[eé]g|strategy|roadmap|posicionamento|arquitetura|cto", txt, flags=re.IGNORECASE):
+            requested.append("orion")
+        if re.search(r"valuation|financeir|financial|receita|margem|cash ?flow|fluxo de caixa|cfo", txt, flags=re.IGNORECASE):
+            requested.append("chris")
+        if re.search(r"auditori|audit|risco|seguran[cç]a|incidente|root cause", txt, flags=re.IGNORECASE):
+            requested.append("auditor")
+        if re.search(r"github|repo|reposit[oó]rio|branch|pull request|\bpr\b|patch|c[oó]digo|code|frontend|backend", txt, flags=re.IGNORECASE):
+            requested.append("orkio")
+        ordered: List[str] = []
+        for slug in requested:
+            if slug not in ordered:
+                ordered.append(slug)
+        return ordered
 
     if has_team:
-        # group mode baseado nos aliases realmente existentes na org
         seen_ids = set()
         preferred_order = [
             "orkio", "orkio (ceo)", "chris", "chris (vp/cfo)", "orion", "orion (cto)",
+            "auditor", "technical auditor",
             "aurora", "aurora (cmo)", "atlas", "atlas (cro)", "themis", "themis (legal)",
             "gaia", "gaia (accounting)", "hermes", "hermes (coo)", "selene", "selene (people)",
         ]
@@ -5083,10 +5110,17 @@ def _select_target_agents(
     elif mention_tokens:
         for tok in mention_tokens:
             a = alias_to_agent.get(tok.strip().lower())
-            if a and a.id not in {x.id for x in target}:
+            if a and a.id not in {x.id for x in target if x}:
                 target.append(a)
 
-    # de-dup preserve order
+    if not target:
+        semantic_agents = _semantic_requested_agents(message)
+        for slug in semantic_agents:
+            candidate = alias_to_agent.get(slug)
+            if candidate is None and slug == "auditor":
+                candidate = alias_to_agent.get("orion") or alias_to_agent.get("orion (cto)")
+            _append_agent(candidate)
+
     seen: set = set()
     deduped: List[Any] = []
     for a in target:
@@ -5382,31 +5416,164 @@ def _github_token_value() -> str:
         return ""
 
 
-def _get_runtime_capability_registry() -> Dict[str, Any]:
-    """Runtime-safe capability exposure used by runtime_hints and execution guards."""
-    github_enabled = bool(_github_token_value() and _clean_env(os.getenv("GITHUB_REPO", "")))
-    available: List[str] = []
-    if github_enabled:
-        available.extend([
-            "github_create_file",
-            "github_create_branch",
-            "github_update_file",
-            "github_list_branches",
-            "github_list_files",
-            "github_create_pull_request",
-            "github_commit_batch",
+
+def _canonical_runtime_agent_slug(name: Any) -> Optional[str]:
+    raw = str(name or "").strip().lower()
+    if not raw:
+        return None
+    if raw.startswith("orkio"):
+        return "orkio"
+    if raw.startswith("orion"):
+        return "orion"
+    if raw.startswith("chris"):
+        return "chris"
+    if raw.startswith("auditor") or "auditor" in raw:
+        return "auditor"
+    return None
+
+
+def _runtime_available_agents(db: Optional[Session] = None, org: Optional[str] = None) -> List[str]:
+    discovered: List[str] = []
+    if db is not None and org:
+        try:
+            ensure_core_agents(db, org)
+            rows = db.execute(select(Agent).where(Agent.org_slug == org).order_by(Agent.created_at.asc())).scalars().all()
+            for row in rows:
+                slug = _canonical_runtime_agent_slug(getattr(row, "name", None))
+                if slug and slug not in discovered:
+                    discovered.append(slug)
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+    if not discovered:
+        discovered = ["orkio", "orion", "chris"]
+    ordered = [slug for slug in ["orkio", "orion", "chris", "auditor"] if slug in discovered]
+    for slug in discovered:
+        if slug not in ordered:
+            ordered.append(slug)
+    return ordered
+
+
+def _build_runtime_capabilities_payload(db: Optional[Session] = None, org: Optional[str] = None) -> Dict[str, Any]:
+    available_agents = _runtime_available_agents(db, org)
+    github_ctx = control_plane_github_context(repo=_clean_env(os.getenv("GITHUB_REPO", "")) or None)
+    github_repo = _clean_env(os.getenv("GITHUB_REPO", ""))
+    github_repo_web = _clean_env(os.getenv("GITHUB_REPO_WEB", ""))
+    repo_labels: List[str] = []
+    if github_repo:
+        repo_labels.append("backend")
+    if github_repo_web:
+        repo_labels.append("frontend")
+    github_available = bool(github_ctx.get("token_present") and (github_repo or github_repo_web))
+    github_mode = "governed_pr_only" if github_available else "unavailable"
+
+    available_ops: List[str] = []
+    if github_available:
+        available_ops.extend([
+            "github_repo_read",
+            "github_repo_audit",
+            "github_pr_prepare",
         ])
-    return {
-        "available": available,
+
+    payload: Dict[str, Any] = {
+        "available": available_ops,
+        "multiagent": {
+            "enabled": len(available_agents) > 0,
+            "available_agents": available_agents,
+            "handoff_enabled": len(available_agents) > 1,
+        },
         "github": {
-            "enabled": github_enabled,
-            "repo": _clean_env(os.getenv("GITHUB_REPO", "")),
+            "available": github_available,
+            "read_enabled": github_available,
+            "write_enabled": False,
+            "propose_patch_enabled": github_available,
+            "repositories": repo_labels,
+            "repository_targets": {
+                "backend": github_repo or None,
+                "frontend": github_repo_web or None,
+            },
+            "mode": github_mode,
+            "control_plane_only": True,
             "branch": _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main",
-            "write_enabled": github_enabled,
         },
     }
+    return payload
 
 
+def _get_runtime_capability_registry(db: Optional[Session] = None, org: Optional[str] = None) -> Dict[str, Any]:
+    """Runtime-safe capability exposure used by runtime_hints and execution guards."""
+    return _build_runtime_capabilities_payload(db=db, org=org)
+
+
+def _is_github_access_request(user_text: str) -> bool:
+    txt = (user_text or "").strip().lower()
+    if not txt:
+        return False
+    patterns = [
+        r"acesso .*reposit",
+        r"acesso .*github",
+        r"tem acesso .*repo",
+        r"tem acesso .*github",
+        r"consegue acessar .*repo",
+        r"consegue acessar .*github",
+        r"github.*(conectado|acesso|status)",
+        r"repo[sitório]*.*(disponível|disponivel|acesso|status)",
+    ]
+    return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
+
+
+def _build_github_runtime_status_text(db: Optional[Session] = None, org: Optional[str] = None) -> str:
+    capabilities = _build_runtime_capabilities_payload(db=db, org=org)
+    github = capabilities.get("github") if isinstance(capabilities.get("github"), dict) else {}
+    available = bool(github.get("available"))
+    repositories = list(github.get("repositories") or [])
+    repos_label = ", ".join(repositories) if repositories else "sem repositórios declarados"
+    if not available:
+        return (
+            "Não tenho acesso GitHub operacional neste ambiente. "
+            "O control-plane não detectou credencial ativa para leitura governada dos repositórios."
+        )
+    mode = str(github.get("mode") or "governed_pr_only").strip()
+    branch = str(github.get("branch") or "main").strip() or "main"
+    if mode == "governed_pr_only":
+        return (
+            "Tenho acesso governado ao GitHub em modo PR-only. "
+            f"Posso ler os repositórios declarados ({repos_label}) e preparar propostas de alteração na branch base {branch}, "
+            "mas não aplico mudanças diretamente em produção. "
+            "Qualquer execução depende de aprovação do Admin Master."
+        )
+    return (
+        "O GitHub está disponível em runtime com governança ativa. "
+        f"Repos declarados: {repos_label}. "
+        "A escrita direta continua bloqueada fora da trilha aprovada."
+    )
+
+
+def _build_capability_inventory_text(db: Optional[Session] = None, org: Optional[str] = None) -> str:
+    reg = _build_runtime_capabilities_payload(db=db, org=org)
+    multiagent = reg.get("multiagent") if isinstance(reg.get("multiagent"), dict) else {}
+    github = reg.get("github") if isinstance(reg.get("github"), dict) else {}
+    available_agents = list(multiagent.get("available_agents") or [])
+    lines = []
+    if available_agents:
+        lines.append("Multiagente operacional:")
+        lines.append("- agentes disponíveis: " + ", ".join(available_agents))
+        lines.append(f"- handoff habilitado: {bool(multiagent.get('handoff_enabled'))}")
+    else:
+        lines.append("Multiagente ainda não confirmado em runtime.")
+    lines.append("")
+    if github.get("available"):
+        lines.append("GitHub operacional:")
+        lines.append(f"- modo: {github.get('mode') or 'governed_pr_only'}")
+        lines.append(f"- leitura habilitada: {bool(github.get('read_enabled'))}")
+        lines.append("- escrita direta habilitada: False")
+        lines.append("- repositórios: " + ", ".join(list(github.get("repositories") or []) or ["n/d"]))
+    else:
+        lines.append("GitHub operacional:")
+        lines.append("- indisponível neste ambiente")
+    return "\n".join(lines)
 
 
 def _is_capability_inventory_request(user_text: str) -> bool:
@@ -5421,25 +5588,6 @@ def _is_capability_inventory_request(user_text: str) -> bool:
         r"capacidade[s]? operacionais",
     ]
     return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
-
-def _build_capability_inventory_text() -> str:
-    reg = _get_runtime_capability_registry()
-    available = list(reg.get("available") or [])
-    github = reg.get("github") if isinstance(reg.get("github"), dict) else {}
-    if not available:
-        return (
-            "No momento, não há capabilities operacionais confirmadas em runtime. "
-            "Posso descrever capacidades conceituais, mas não afirmar disponibilidade técnica sem registro operacional."
-        )
-    lines = ["Capabilities operacionais ativas agora:"]
-    for item in available:
-        lines.append(f"- {item}")
-    if github.get("enabled"):
-        lines.append("")
-        lines.append(f"GitHub repo: {github.get('repo') or 'n/d'}")
-        lines.append(f"GitHub branch padrão: {github.get('branch') or 'main'}")
-        lines.append(f"GitHub write_enabled: {bool(github.get('write_enabled'))}")
-    return "\n".join(lines)
 
 def _github_headers() -> Dict[str, str]:
     token = _github_token_value()
@@ -7550,8 +7698,10 @@ def chat(
         should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
         if blocked_reply is None:
             try:
-                if _is_capability_inventory_request(inp.message):
-                    capability_inventory_answer = _build_capability_inventory_text()
+                if _is_github_access_request(inp.message):
+                    capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
+                elif _is_capability_inventory_request(inp.message):
+                    capability_inventory_answer = _build_capability_inventory_text(db=db, org=org)
                 elif should_execute_runtime:
                     execution_result = _execute_capability_if_authorized(
                     inp.message,
@@ -7705,7 +7855,7 @@ def chat(
         "voice_id": resolve_agent_voice(last_agent) if last_agent else None,
         "avatar_url": getattr(last_agent, 'avatar_url', None) if last_agent else None,
         "runtime_hints": (
-            (lambda _rh: (dict(_rh, capabilities=_get_runtime_capability_registry()) if isinstance(_rh, dict) else {"capabilities": _get_runtime_capability_registry()}))(
+            (lambda _rh: (dict(_rh, capabilities=_get_runtime_capability_registry(db=db, org=org)) if isinstance(_rh, dict) else {"capabilities": _get_runtime_capability_registry(db=db, org=org)}))(
                 runtime_enrichment.get("runtime_hints") if runtime_enrichment else None
             )
         ),
@@ -8087,9 +8237,9 @@ def _build_runtime_enrichment(
     )
     try:
         if isinstance(runtime_hints, dict):
-            runtime_hints["capabilities"] = _get_runtime_capability_registry()
+            runtime_hints["capabilities"] = _get_runtime_capability_registry(db=db, org=org)
         else:
-            runtime_hints = {"capabilities": _get_runtime_capability_registry()}
+            runtime_hints = {"capabilities": _get_runtime_capability_registry(db=db, org=org)}
     except Exception:
         pass
     return {
@@ -10215,6 +10365,13 @@ def list_agents(x_org_slug: Optional[str] = Header(default=None), user=Depends(g
     return [{"id": a.id, "name": a.name, "description": a.description, "rag_enabled": a.rag_enabled, "rag_top_k": a.rag_top_k, "model": a.model, "temperature": a.temperature, "is_default": a.is_default, "voice_id": resolve_agent_voice(a), "avatar_url": getattr(a, 'avatar_url', None), "updated_at": a.updated_at} for a in rows]
 
 
+@app.get("/api/agents/capabilities")
+def get_agent_capabilities(x_org_slug: Optional[str] = Header(default=None), user=Depends(get_current_user), db: Session = Depends(get_db)):
+    org = get_request_org(user, x_org_slug)
+    ensure_core_agents(db, org)
+    return _build_runtime_capabilities_payload(db=db, org=org)
+
+
 
 @app.get("/api/admin/agents/{agent_id}/links")
 def admin_get_agent_links(agent_id: str, _admin=Depends(require_admin_access), x_org_slug: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
@@ -10920,6 +11077,7 @@ async def chat_stream(
 
         try:
             stream_history_seed = list(prev_history_seed)
+            previous_agent_payload: Optional[Dict[str, Any]] = None
             for ag in target_agents:
                 if await request.is_disconnected():
                     return
@@ -10935,6 +11093,25 @@ async def chat_stream(
                 ag_rag_top_k = int(ag.get("rag_top_k") or 0) or 6
 
                 agent_started_monotonic = time.monotonic()
+
+                if previous_agent_payload and previous_agent_payload.get("id") != ag_id:
+                    try:
+                        yield sse_execution(
+                            "agent_handoff",
+                            f"{previous_agent_payload.get('name') or 'Agente'} → {ag_name}",
+                            kind="agent",
+                            scope="system",
+                            agent_id=ag_id,
+                            agent_name=ag_name,
+                            started_monotonic=agent_started_monotonic,
+                            detail="Handoff operacional entre especialistas.",
+                            from_agent_id=previous_agent_payload.get("id"),
+                            from_agent_name=previous_agent_payload.get("name"),
+                            to_agent_id=ag_id,
+                            to_agent_name=ag_name,
+                        )
+                    except Exception:
+                        return
 
                 # per-agent status
                 yield sse_event("status", {"phase": "agent", "agent_id": ag_id, "agent_name": ag_name, "agent": ag_name, "status": f"Executando @{ag_name}...", "trace_id": trace_id})
@@ -11029,8 +11206,10 @@ async def chat_stream(
                 should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
                 if blocked_reply is None:
                     try:
-                        if _is_capability_inventory_request(message):
-                            capability_inventory_answer = _build_capability_inventory_text()
+                        if _is_github_access_request(message):
+                            capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
+                        elif _is_capability_inventory_request(message):
+                            capability_inventory_answer = _build_capability_inventory_text(db=db, org=org)
                         elif should_execute_runtime:
                             execution_result = _execute_capability_if_authorized(
                             message,
@@ -11407,6 +11586,8 @@ async def chat_stream(
                 except Exception:
                     pass
 
+                previous_agent_payload = {"id": ag_id, "name": ag_name}
+
             final_runtime_enrichment = runtime_enrichment if isinstance(runtime_enrichment, dict) else {}
             try:
                 final_runtime_enrichment = dict(final_runtime_enrichment or {})
@@ -11444,7 +11625,7 @@ async def chat_stream(
                 if isinstance(_runtime_hints_out, dict):
                     _runtime_hints_out["execution_review"] = execution_review
                     _runtime_hints_out["planner_adjustment"] = planner_adjustment
-                    _runtime_hints_out["capabilities"] = _get_runtime_capability_registry()
+                    _runtime_hints_out["capabilities"] = _get_runtime_capability_registry(db=db, org=org)
                     final_runtime_enrichment["runtime_hints"] = _runtime_hints_out
             except Exception:
                 pass
