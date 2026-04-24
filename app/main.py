@@ -5848,6 +5848,7 @@ def _github_extract_paths_from_text(user_text: str) -> List[str]:
             unique.append(p)
     return unique[:50]
 
+
 def _github_write_authorization_flags(user_text: str) -> Dict[str, Any]:
     txt = (user_text or "").strip()
     low = txt.lower()
@@ -5865,50 +5866,111 @@ def _github_write_authorization_flags(user_text: str) -> Dict[str, Any]:
     }
     if not txt:
         return flags
-    flags["deny_execution"] = bool(re.search(r"(n[ãa]o\s+autorizo\s+execu[cç][ãa]o|revogo\s+autoriza[cç][ãa]o)", low, flags=re.IGNORECASE))
+
+    flags["deny_execution"] = bool(
+        re.search(r"(n[ãa]o\s+autorizo\s+execu[cç][ãa]o|revogo\s+autoriza[cç][ãa]o)", low, flags=re.IGNORECASE)
+    )
     flags["deny_merge"] = bool(re.search(r"(n[ãa]o\s+autorizo\s+merge)", low, flags=re.IGNORECASE))
-    flags["allow_branch"] = bool(re.search(r"(autorizo\s+criar\s+branch|autorizo\s+branch)", low, flags=re.IGNORECASE))
-    flags["allow_patch"] = bool(re.search(r"(autorizo\s+aplicar\s+patch|autorizo\s+patch)", low, flags=re.IGNORECASE))
-    flags["allow_commit"] = bool(re.search(r"(autorizo\s+preparar\s+commit|autorizo\s+commit\s+direto|autorizo\s+commit)", low, flags=re.IGNORECASE))
-    flags["allow_pr"] = bool(re.search(r"(autorizo\s+abrir\s+pr|autorizo\s+pr)", low, flags=re.IGNORECASE))
-    flags["allow_main"] = bool(re.search(r"(autorizo\s+escrever\s+na\s+main|autorizo\s+patch\s+direto\s+na\s+main|autorizo\s+main)", low, flags=re.IGNORECASE))
+
+    m_authorize = re.search(r"\bautorizo\b", low, flags=re.IGNORECASE)
+    auth_window = low[m_authorize.start():m_authorize.start() + 400] if m_authorize else low
+
+    flags["allow_branch"] = bool(
+        re.search(r"(autorizo\s+criar\s+branch|autorizo\s+branch)", low, flags=re.IGNORECASE)
+        or (m_authorize and re.search(r"\bbranch\b", auth_window, flags=re.IGNORECASE))
+    )
+    flags["allow_patch"] = bool(
+        re.search(r"(autorizo\s+aplicar\s+patch|autorizo\s+patch)", low, flags=re.IGNORECASE)
+        or (m_authorize and re.search(r"\b(patch|arquivo|file)\b", auth_window, flags=re.IGNORECASE))
+    )
+    flags["allow_commit"] = bool(
+        re.search(r"(autorizo\s+preparar\s+commit|autorizo\s+commit\s+direto|autorizo\s+commit)", low, flags=re.IGNORECASE)
+        or (m_authorize and re.search(r"\bcommit\b", auth_window, flags=re.IGNORECASE))
+    )
+    flags["allow_pr"] = bool(
+        re.search(r"(autorizo\s+abrir\s+pr|autorizo\s+pr)", low, flags=re.IGNORECASE)
+        or (m_authorize and (re.search(r"\bpr\b", auth_window, flags=re.IGNORECASE) or "pull request" in auth_window))
+    )
+    flags["allow_main"] = bool(
+        re.search(
+            r"(autorizo\s+escrever\s+na\s+main|autorizo\s+patch\s+direto\s+na\s+main|autorizo\s+main)",
+            low,
+            flags=re.IGNORECASE,
+        )
+    )
     flags["grant"] = any(bool(flags[k]) for k in ("allow_branch", "allow_patch", "allow_commit", "allow_pr", "allow_main"))
     return flags
+
 
 def _github_write_request_flags(user_text: str) -> Dict[str, Any]:
     txt = (user_text or "").strip()
     low = txt.lower()
+    create_file_req = _extract_github_create_file_request(txt) or {}
+    update_file_req = _extract_github_update_file_request(txt) or {}
+    batch_req = _extract_github_batch_update_request(txt) or {}
+    pr_req = _extract_github_create_pr_request(txt) or {}
+    branch_req = _extract_github_create_branch_request(txt) or {}
+
+    requested_paths = list(_github_extract_paths_from_text(txt))
+    extra_paths = [create_file_req.get("path"), update_file_req.get("path")]
+    for change in list(batch_req.get("changes") or []):
+        if isinstance(change, dict):
+            extra_paths.append(change.get("path"))
+    for extra_path in extra_paths:
+        extra_path = str(extra_path or "").strip()
+        if extra_path and extra_path not in requested_paths:
+            requested_paths.append(extra_path)
+
     requested = {
         "requested": False,
         "create_branch": False,
+        "create_file": False,
+        "update_file": False,
+        "batch_commit": False,
         "apply_patch": False,
         "prepare_commit": False,
         "open_pr": False,
         "write_main": False,
-        "paths": _github_extract_paths_from_text(txt),
+        "paths": requested_paths,
     }
     if not txt:
         return requested
 
-    explicit_branch_req = None
-    try:
-        explicit_branch_req = _extract_github_create_branch_request(txt)
-    except Exception:
-        explicit_branch_req = None
-
-    requested["create_branch"] = bool(
+    explicit_branch_command = bool(
         re.search(
-            r"(crie\s+.*\bbranch\b|create\s+.*\bbranch\b|branch\s+tempor[aá]ria|github_create_branch|capability\s+github_create_branch|branch\s*:\s*[A-Za-z0-9._/\-]{1,120}|base_branch\s*:\s*[A-Za-z0-9._/\-]{1,120})",
+            r"(crie\s+(?:uma\s+)?branch\b|create\s+(?:a\s+)?branch\b|github_create_branch|capability\s+github_create_branch)",
             txt,
             flags=re.IGNORECASE,
         )
-        or explicit_branch_req
     )
-    requested["apply_patch"] = bool(re.search(r"(aplique\s+o\s+patch|aplique\s+essa\s+altera[cç][ãa]o|edite\s+o\s+arquivo|crie\s+o\s+arquivo|fa[cç]a\s+essa\s+altera[cç][ãa]o|apply\s+the\s+patch|write\s+the\s+file)", low, flags=re.IGNORECASE))
-    requested["prepare_commit"] = bool(re.search(r"(prepare\s+o\s+commit|preparar\s+commit|commit\s+direto|prepare\s+commit)", low, flags=re.IGNORECASE))
-    requested["open_pr"] = bool(re.search(r"(abrir\s+pr|open\s+pr|pull\s+request)", low, flags=re.IGNORECASE))
-    requested["write_main"] = bool(re.search(r"(na\s+main|write\s+to\s+main|escrev[ae]\s+r?\s+na\s+main|patch\s+direto\s+na\s+main)", low, flags=re.IGNORECASE))
-    requested["requested"] = any(bool(requested[k]) for k in ("create_branch", "apply_patch", "prepare_commit", "open_pr", "write_main"))
+    requested["create_file"] = bool(create_file_req) and not bool(update_file_req) and not bool(batch_req)
+    requested["update_file"] = bool(update_file_req)
+    requested["batch_commit"] = bool(batch_req)
+    requested["open_pr"] = bool(pr_req) or bool(re.search(r"(abrir\s+pr|open\s+pr|pull\s+request)", low, flags=re.IGNORECASE))
+    requested["create_branch"] = bool(branch_req) and explicit_branch_command and not any(
+        [requested["create_file"], requested["update_file"], requested["batch_commit"], requested["open_pr"]]
+    )
+    requested["apply_patch"] = bool(
+        requested["create_file"]
+        or requested["update_file"]
+        or requested["batch_commit"]
+        or re.search(
+            r"(aplique\s+o\s+patch|aplique\s+essa\s+altera[cç][ãa]o|edite\s+o\s+arquivo|crie\s+o\s+arquivo|fa[cç]a\s+essa\s+altera[cç][ãa]o|apply\s+the\s+patch|write\s+the\s+file)",
+            low,
+            flags=re.IGNORECASE,
+        )
+    )
+    requested["prepare_commit"] = bool(
+        requested["batch_commit"]
+        or re.search(r"(prepare\s+o\s+commit|preparar\s+commit|commit\s+direto|prepare\s+commit)", low, flags=re.IGNORECASE)
+    )
+    requested["write_main"] = bool(
+        re.search(r"(na\s+main|write\s+to\s+main|escrev[ae]\s+r?\s+na\s+main|patch\s+direto\s+na\s+main)", low, flags=re.IGNORECASE)
+    )
+    requested["requested"] = any(
+        bool(requested[k])
+        for k in ("create_branch", "create_file", "update_file", "batch_commit", "apply_patch", "prepare_commit", "open_pr", "write_main")
+    )
     return requested
 
 def _is_github_write_request_or_authorization(user_text: str) -> bool:
@@ -5969,6 +6031,7 @@ def _format_github_write_policy_text(snapshot: Dict[str, Any]) -> str:
         lines.append("- nenhuma")
     return "\n".join(lines)
 
+
 def _github_store_write_approval(
     *,
     org: str,
@@ -5982,10 +6045,9 @@ def _github_store_write_approval(
     if auth_flags.get("allow_branch"):
         allowed_actions.append("create_branch")
     if auth_flags.get("allow_patch"):
-        allowed_actions.append("apply_patch")
-        allowed_actions.append("write_file")
+        allowed_actions.extend(["apply_patch", "write_file", "create_file", "update_file"])
     if auth_flags.get("allow_commit"):
-        allowed_actions.append("prepare_commit")
+        allowed_actions.extend(["prepare_commit", "batch_commit"])
     if auth_flags.get("allow_pr"):
         allowed_actions.append("open_pr")
     if auth_flags.get("allow_main"):
@@ -6530,12 +6592,15 @@ def _github_verify_file_exists(repo: str, branch: str, path: str) -> tuple[bool,
     return verified, returned_path, body_verify or {}
 
 
+
 def _extract_github_create_file_request(user_text: str) -> Optional[Dict[str, str]]:
     txt = (user_text or "").strip()
     if not txt:
         return None
     low = txt.lower()
     if not any(k in low for k in ("github", "arquivo", "file")):
+        return None
+    if any(k in low for k in ("atualize o arquivo", "edite o arquivo", "update file", "update the file", "append to file", "substitua o arquivo")):
         return None
 
     patterns = [
@@ -6564,6 +6629,12 @@ def _extract_github_create_file_request(user_text: str) -> Optional[Dict[str, st
         return None
     if path.startswith("/") or ".." in path or "\\" in path:
         return {"invalid": "unsafe_path"}
+
+    branch = ""
+    m_branch = re.search(r"(?:na\s+branch|on\s+branch)[: ]+([A-Za-z0-9._/\-]{1,120})", txt, flags=re.IGNORECASE)
+    if m_branch:
+        branch = (m_branch.group(1) or "").strip()
+
     content = ""
     m_content = re.search(r"(?:conte[uú]do|content)[: ]+(.+)$", txt, flags=re.IGNORECASE | re.DOTALL)
     if m_content:
@@ -6574,12 +6645,11 @@ def _extract_github_create_file_request(user_text: str) -> Optional[Dict[str, st
             content = (quoted.group(1) or "").strip()
     if not content:
         content = "created by Orkio GitHub capability\n"
-    payload: Dict[str, str] = {"path": path, "content": content}
-    m_branch = re.search(r"(?:na branch|on branch|branch)[: ]+([A-Za-z0-9._/\-]{1,120})", txt, flags=re.IGNORECASE)
-    if m_branch:
-        payload["branch"] = (m_branch.group(1) or "").strip()
-    return payload
 
+    payload: Dict[str, str] = {"path": path, "content": content}
+    if branch:
+        payload["branch"] = branch
+    return payload
 
 
 def _extract_github_create_branch_request(user_text: str) -> Optional[Dict[str, str]]:
@@ -6597,8 +6667,7 @@ def _extract_github_create_branch_request(user_text: str) -> Optional[Dict[str, 
         r"crie no frontend a branch[: ]+([A-Za-z0-9._/\-]{1,120})",
         r"create a branch called[: ]+([A-Za-z0-9._/\-]{1,120})",
         r"create branch[: ]+([A-Za-z0-9._/\-]{1,120})",
-        r"branch\s*:\s*([A-Za-z0-9._/\-]{1,120})",
-        r"branch [`']?([A-Za-z0-9._/\-]{1,120})[`']?",
+        r"github_create_branch[: ]+([A-Za-z0-9._/\-]{1,120})",
     ]
     branch = ""
     for pat in patterns:
@@ -6608,9 +6677,6 @@ def _extract_github_create_branch_request(user_text: str) -> Optional[Dict[str, 
             break
 
     if not branch:
-        # Try structured parameter blocks like:
-        # - repo: backend
-        # - branch: sandbox/sanity-001
         for raw_line in txt.splitlines():
             line = str(raw_line or "").strip()
             m = re.match(r"^-?\s*branch\s*:\s*([A-Za-z0-9._/\-]{1,120})\s*$", line, flags=re.IGNORECASE)
@@ -6624,7 +6690,6 @@ def _extract_github_create_branch_request(user_text: str) -> Optional[Dict[str, 
     if not branch or branch.startswith("/") or ".." in branch or "\\" in branch or " " in branch:
         return {"invalid": "unsafe_branch"}
     return {"branch": branch}
-
 
 def _extract_github_list_branches_request(user_text: str) -> bool:
     txt = (user_text or "").strip().lower()
@@ -6708,29 +6773,54 @@ def _extract_github_update_file_request(user_text: str) -> Optional[Dict[str, st
     return payload
 
 
+
 def _extract_github_create_pr_request(user_text: str) -> Optional[Dict[str, str]]:
     txt = (user_text or "").strip()
     low = txt.lower()
-    if "pull request" not in low and "pr " not in f"{low} ":
+    if "pull request" not in low and " pr" not in f" {low} " and "abrir pr" not in low:
         return None
-    patterns = [
-        r"pull request da branch ([A-Za-z0-9._/\-]{1,120}) para ([A-Za-z0-9._/\-]{1,120}) com t[íi]tulo[: ]+(.+)$",
-        r"create a pull request from ([A-Za-z0-9._/\-]{1,120}) to ([A-Za-z0-9._/\-]{1,120}) with title[: ]+(.+)$",
-    ]
-    for pat in patterns:
-        m = re.search(pat, txt, flags=re.IGNORECASE | re.DOTALL)
-        if m:
-            head = (m.group(1) or "").strip()
-            base = (m.group(2) or "").strip()
-            title = (m.group(3) or "").strip()
-            if not head or not base or not title:
-                return None
-            return {"head": head, "base": base, "title": title}
-    return None
 
+    head = ""
+    base = ""
+    m = re.search(
+        r"(?:pull request|pr)\s+da\s+branch\s+([A-Za-z0-9._/\-]{1,120})\s+para\s+([A-Za-z0-9._/\-]{1,120})",
+        txt,
+        flags=re.IGNORECASE,
+    )
+    if not m:
+        m = re.search(
+            r"(?:create|open)\s+(?:a\s+)?pull request\s+from\s+([A-Za-z0-9._/\-]{1,120})\s+to\s+([A-Za-z0-9._/\-]{1,120})",
+            txt,
+            flags=re.IGNORECASE,
+        )
+    if m:
+        head = (m.group(1) or "").strip()
+        base = (m.group(2) or "").strip()
 
+    if not head or not base:
+        return None
 
+    title = ""
+    body = ""
+    m_title = re.search(r'(?:com\s+o\s+t[íi]tulo|with\s+title)\s+"([^"]+)"', txt, flags=re.IGNORECASE)
+    if not m_title:
+        m_title = re.search(r"(?:com\s+o\s+t[íi]tulo|with\s+title)[: ]+(.+?)(?:\s+e\s+descri[cç][ãa]o|\n|$)", txt, flags=re.IGNORECASE | re.DOTALL)
+    if m_title:
+        title = (m_title.group(1) or "").strip()
 
+    m_body = re.search(r'(?:e\s+descri[cç][ãa]o|with\s+description)\s+"([\s\S]+?)"\s*$', txt, flags=re.IGNORECASE)
+    if not m_body:
+        m_body = re.search(r"(?:e\s+descri[cç][ãa]o|with\s+description)[: ]+(.+)$", txt, flags=re.IGNORECASE | re.DOTALL)
+    if m_body:
+        body = (m_body.group(1) or "").strip()
+
+    if not title:
+        title = f"PR {head} -> {base}"
+
+    payload: Dict[str, str] = {"head": head, "base": base, "title": title}
+    if body:
+        payload["body"] = body
+    return payload
 
 def _extract_github_batch_update_request(user_text: str) -> Optional[Dict[str, Any]]:
     txt = (user_text or "").strip()
@@ -7015,13 +7105,15 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
 
     return "\n".join(parts)
 
+
 def _github_create_file_capability(*, path: str, content: str, branch: Optional[str] = None, trace_id: Optional[str] = None) -> Dict[str, Any]:
     repo = _clean_env(os.getenv("GITHUB_REPO", ""))
-    branch = (_clean_env(branch or "", default="") or _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main")
+    default_branch = _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main"
+    branch = (_clean_env(branch or "", default="") or default_branch)
     token = _github_token_value()
     if not _github_write_runtime_enabled():
         return {"handled": True, "success": False, "provider": "github", "message": "GitHub write runtime desabilitado por ambiente."}
-    if branch == (_clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main") and not _github_safe_main_write_allowed():
+    if branch == default_branch and not _github_safe_main_write_allowed():
         return {"handled": True, "success": False, "provider": "github", "repo": repo, "branch": branch, "path": path, "message": f"Criação direta na branch '{branch}' bloqueada pelo modo safe evolution."}
     if not token or not repo:
         return {
@@ -7066,26 +7158,9 @@ def _github_create_file_capability(*, path: str, content: str, branch: Optional[
             "message": (body_put.get("message") if isinstance(body_put, dict) else None) or "Falha ao criar arquivo no GitHub.",
         }
 
-    commit_sha = ""
-    try:
-        commit_sha = (((body_put or {}).get("commit") or {}).get("sha") or "").strip()
-    except Exception:
-        commit_sha = ""
-
-    verified = False
-    verified_path = ""
-    verify_body: Dict[str, Any] = {}
-    for _ in range(3):
-        verified, verified_path, verify_body = _github_verify_file_exists(repo, branch, path)
-        if verified:
-            break
-        try:
-            time.sleep(0.35)
-        except Exception:
-            pass
-
-    if not verified:
-        _github_log("GITHUB_WRITE_VERIFY_FAILED", repo=repo, branch=branch, path=path, status=status_put, trace_id=trace_id or "")
+    ok, resolved_branch, verify_body = _github_verify_file_exists(repo=repo, path=path, branch=branch)
+    if not ok:
+        _github_log("GITHUB_WRITE_VERIFY_FAILED", repo=repo, branch=branch, path=path, trace_id=trace_id or "")
         return {
             "handled": True,
             "success": False,
@@ -7093,25 +7168,25 @@ def _github_create_file_capability(*, path: str, content: str, branch: Optional[
             "repo": repo,
             "branch": branch,
             "path": path,
-            "commit_sha": commit_sha,
-            "trace_id": trace_id,
-            "message": f"Solicitação enviada ao GitHub, mas sem confirmação verificável de criação do arquivo '{path}'.",
+            "message": f"Solicitação enviada ao GitHub, mas sem confirmação verificável do arquivo '{path}'.",
         }
 
-    verified_sha = ((verify_body or {}).get("sha") or "").strip() or commit_sha
-    _github_log("GITHUB_WRITE_VERIFY_OK", repo=repo, branch=branch, path=path, sha=verified_sha, trace_id=trace_id or "")
+    verified_sha = ((((verify_body or {}).get("content") or {}).get("sha") or "").strip())
+    size_bytes = int((((verify_body or {}).get("content") or {}).get("size") or 0) or 0)
+    _github_log("GITHUB_WRITE_VERIFY_OK", repo=repo, branch=resolved_branch or branch, path=path, sha=verified_sha, trace_id=trace_id or "")
     return {
         "handled": True,
         "success": True,
         "provider": "github",
+        "event": "GITHUB_WRITE_VERIFY_OK",
         "repo": repo,
-        "branch": branch,
+        "branch": resolved_branch or branch,
         "path": path,
-        "commit_sha": verified_sha,
+        "sha": verified_sha,
+        "size_bytes": size_bytes,
         "trace_id": trace_id,
         "message": "Arquivo criado com confirmação operacional verificável.",
     }
-
 
 def _github_verify_branch_exists(repo: str, branch: str) -> tuple[bool, str, Dict[str, Any]]:
     verify_url = f"https://api.github.com/repos/{repo}/git/ref/heads/{branch}"
@@ -8243,7 +8318,8 @@ def _github_commit_batch_capability(*, changes: List[Dict[str, str]], branch: Op
         "title": title or "Batch commit",
         "message": "Commit em lote executado com confirmação operacional.",
     }
-def _github_create_pull_request_capability(*, head: str, base: str, title: str, trace_id: Optional[str] = None) -> Dict[str, Any]:
+
+def _github_create_pull_request_capability(*, head: str, base: str, title: str, body: Optional[str] = None, trace_id: Optional[str] = None) -> Dict[str, Any]:
     repo = _clean_env(os.getenv("GITHUB_REPO", ""))
     token = _github_token_value()
     if not _github_pr_runtime_enabled():
@@ -8274,20 +8350,18 @@ def _github_create_pull_request_capability(*, head: str, base: str, title: str, 
             "message": f"A branch '{head}' não possui diferenças em relação a '{base}'. Faça pelo menos um commit antes de abrir o pull request.",
         }
 
-    payload = {"title": title, "head": head, "base": base, "body": f"PR criado pelo Orkio{f' [{trace_id}]' if trace_id else ''}"}
+    pr_body = (body or "").strip() or f"PR criado pelo Orkio{f' [{trace_id}]' if trace_id else ''}"
+    payload = {"title": title, "head": head, "base": base, "body": pr_body}
     _github_log("GITHUB_PR_ATTEMPT", repo=repo, head=head, base=base, title=title, trace_id=trace_id or "")
-    status, body = _github_api_json("POST", f"https://api.github.com/repos/{repo}/pulls", payload)
+    status, resp_body = _github_api_json("POST", f"https://api.github.com/repos/{repo}/pulls", payload)
     if status not in (200, 201):
         _github_log("GITHUB_PR_FAILED", repo=repo, head=head, base=base, status=status, trace_id=trace_id or "")
-        return {"handled": True, "success": False, "provider": "github", "repo": repo, "branch": head, "base_branch": base, "message": (body.get("message") if isinstance(body, dict) else None) or "Falha ao criar pull request no GitHub."}
-    number = int((body or {}).get("number") or 0)
-    html_url = str((body or {}).get("html_url") or "").strip()
-    pr_title = str((body or {}).get("title") or title).strip()
+        return {"handled": True, "success": False, "provider": "github", "repo": repo, "branch": head, "base_branch": base, "message": (resp_body.get("message") if isinstance(resp_body, dict) else None) or "Falha ao criar pull request no GitHub."}
+    number = int((resp_body or {}).get("number") or 0)
+    html_url = str((resp_body or {}).get("html_url") or "").strip()
+    pr_title = str((resp_body or {}).get("title") or title).strip()
     _github_log("GITHUB_PR_VERIFY_OK", repo=repo, head=head, base=base, number=number, trace_id=trace_id or "")
     return {"handled": True, "success": True, "provider": "github", "repo": repo, "branch": head, "base_branch": base, "pull_request_number": number, "pull_request_url": html_url, "title": pr_title, "message": "Pull request criado com confirmação operacional verificável."}
-
-
-
 
 def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, Any]:
     data = dict(raw or {})
@@ -8369,85 +8443,6 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
 
 
 
-def _execute_governed_github_write_action(
-    user_text: str,
-    *,
-    approval: Dict[str, Any],
-    trace_id: Optional[str] = None,
-) -> Dict[str, Any]:
-    req_flags = _github_write_request_flags(user_text)
-    allowed_actions = set(str(x or "").strip() for x in (approval.get("actions_allowed") or []))
-
-    if req_flags.get("create_branch"):
-        if "create_branch" not in allowed_actions:
-            return {"handled": True, "success": False, "provider": "github", "message": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL. motivo: create_branch_sem_autorização_explícita"}
-        branch_req = _extract_github_create_branch_request(user_text) or {}
-        if branch_req.get("invalid"):
-            return {"handled": True, "success": False, "provider": "github", "message": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL. motivo: nome_de_branch_inseguro"}
-        branch_name = str(branch_req.get("branch") or "").strip() or _github_generated_branch_name("sandbox/sanity")
-        return _github_create_branch_capability(branch=branch_name, trace_id=trace_id)
-
-    batch_req = _extract_github_batch_update_request(user_text)
-    if batch_req:
-        if not ({"prepare_commit", "apply_patch", "write_file"} & allowed_actions):
-            return {"handled": True, "success": False, "provider": "github", "message": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL. motivo: batch_commit_sem_autorização_explícita"}
-        if batch_req.get("invalid"):
-            return {"handled": True, "success": False, "provider": "github", "message": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL. motivo: payload_batch_inválido"}
-        return _github_commit_batch_capability(
-            changes=list(batch_req.get("changes") or []),
-            branch=str(batch_req.get("branch") or "").strip() or None,
-            title=str(batch_req.get("title") or "Batch update").strip() or "Batch update",
-            trace_id=trace_id,
-        )
-
-    create_req = _extract_github_create_file_request(user_text)
-    if create_req:
-        if create_req.get("invalid"):
-            return {"handled": True, "success": False, "provider": "github", "message": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL. motivo: caminho_de_arquivo_inseguro"}
-        if not ({"apply_patch", "write_file"} & allowed_actions):
-            return {"handled": True, "success": False, "provider": "github", "message": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL. motivo: create_file_sem_autorização_explícita"}
-        return _github_create_file_capability(
-            path=str(create_req.get("path") or "").strip(),
-            content=str(create_req.get("content") or ""),
-            branch=str(create_req.get("branch") or "").strip() or None,
-            trace_id=trace_id,
-        )
-
-    update_req = _extract_github_update_file_request(user_text)
-    if update_req:
-        if update_req.get("invalid"):
-            return {"handled": True, "success": False, "provider": "github", "message": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL. motivo: payload_update_inválido"}
-        if not ({"apply_patch", "write_file"} & allowed_actions):
-            return {"handled": True, "success": False, "provider": "github", "message": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL. motivo: update_file_sem_autorização_explícita"}
-        return _github_update_file_capability(
-            path=str(update_req.get("path") or "").strip(),
-            content=str(update_req.get("content") or ""),
-            branch=str(update_req.get("branch") or "").strip() or None,
-            mode=str(update_req.get("mode") or "replace").strip().lower() or "replace",
-            trace_id=trace_id,
-        )
-
-    pr_req = _extract_github_create_pr_request(user_text)
-    if pr_req:
-        if "open_pr" not in allowed_actions:
-            return {"handled": True, "success": False, "provider": "github", "message": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL. motivo: open_pr_sem_autorização_explícita"}
-        return _github_create_pull_request_capability(
-            head=str(pr_req.get("head") or "").strip(),
-            base=str(pr_req.get("base") or "").strip(),
-            title=str(pr_req.get("title") or "").strip(),
-            trace_id=trace_id,
-        )
-
-    # Fallback conservador: preserve governed policy text if the request was recognized
-    # as a write request but no concrete executable action could be derived.
-    return {
-        "handled": True,
-        "success": False,
-        "provider": "github",
-        "message": "Não foi possível derivar uma ação GitHub executável a partir do comando autorizado.",
-    }
-
-
 def _should_execute_runtime_from_enrichment(runtime_enrichment: Optional[Dict[str, Any]]) -> bool:
     if not isinstance(runtime_enrichment, dict):
         return False
@@ -8455,6 +8450,7 @@ def _should_execute_runtime_from_enrichment(runtime_enrichment: Optional[Dict[st
     if not isinstance(intent_package, dict):
         return False
     return bool(intent_package.get("requires_runtime_execution"))
+
 
 
 
@@ -8473,16 +8469,11 @@ def _dispatch_governed_github_write(
 
     Returns:
       {"text": Optional[str], "execution_result": Optional[Dict[str, Any]]}
-
-    Branch creation is executed here as a structured runtime result so the truthful
-    execution guard can preserve provider-confirmed outcomes instead of downgrading
-    them to generic inventory text.
     """
     snapshot = _github_write_policy_snapshot(org=org, thread_id=thread_id, payload=payload, db=db)
     auth_flags = _github_write_authorization_flags(user_text)
     req_flags = _github_write_request_flags(user_text)
 
-    # Authorizations / revocations / pure policy lookups remain textual.
     if auth_flags.get("deny_execution") or auth_flags.get("grant") or not req_flags.get("requested"):
         return {
             "text": _build_github_write_response_text(
@@ -8505,26 +8496,140 @@ def _dispatch_governed_github_write(
             "execution_result": None,
         }
 
-    # Execute branch and non-branch write actions through the provider-capable helper.
-    execution_result = _execute_governed_github_write_action(
-        user_text,
-        approval=approval,
-        trace_id=(trace_id or str(approval.get("approval_id") or "")),
-    )
-    if isinstance(execution_result, dict) and execution_result.get("handled"):
-        return {"text": None, "execution_result": execution_result}
+    if req_flags.get("write_main"):
+        if not bool(approval.get("allow_main")):
+            return {
+                "text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: escrita_na_main_sem_autorização_explícita",
+                "execution_result": None,
+            }
+        if not bool(snapshot.get("main_write_allowed_with_explicit_approval")):
+            return {
+                "text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: main_bloqueada_por_politica",
+                "execution_result": None,
+            }
+
+    requested_paths = list(req_flags.get("paths") or [])
+    scope_files = list(approval.get("scope_files") or [])
+    if scope_files and requested_paths:
+        unauthorized = [p for p in requested_paths if p not in scope_files]
+        if unauthorized:
+            return {
+                "text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n"
+                        f"- motivo: arquivo_fora_do_escopo_autorizado\n- arquivos: {', '.join(unauthorized)}",
+                "execution_result": None,
+            }
+
+    allowed_actions = set(approval.get("actions_allowed") or [])
+    trace = trace_id or str(approval.get("approval_id") or "")
+
+    def _ensure_allowed(*options: str) -> Optional[Dict[str, Any]]:
+        if any(opt in allowed_actions for opt in options):
+            return None
+        joined = ", ".join(options)
+        return {
+            "text": f"AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: ação_sem_autorização_explícita\n- required_any_of: {joined}",
+            "execution_result": None,
+        }
+
+    try:
+        normalized: Optional[Dict[str, Any]] = None
+
+        if req_flags.get("create_branch"):
+            blocked = _ensure_allowed("create_branch")
+            if blocked:
+                return blocked
+            branch_req = _extract_github_create_branch_request(user_text) or {}
+            if branch_req.get("invalid"):
+                return {"text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: nome_de_branch_inseguro", "execution_result": None}
+            branch_name = str(branch_req.get("branch") or "").strip() or _github_generated_branch_name("sandbox/sanity")
+            normalized = _github_create_branch_capability(branch=branch_name, trace_id=trace)
+
+        elif req_flags.get("create_file"):
+            blocked = _ensure_allowed("create_file", "write_file", "apply_patch")
+            if blocked:
+                return blocked
+            create_req = _extract_github_create_file_request(user_text) or {}
+            if create_req.get("invalid"):
+                return {"text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: caminho_de_arquivo_inseguro", "execution_result": None}
+            normalized = _github_create_file_capability(
+                path=str(create_req.get("path") or "").strip(),
+                content=str(create_req.get("content") or ""),
+                branch=str(create_req.get("branch") or "").strip() or None,
+                trace_id=trace,
+            )
+
+        elif req_flags.get("update_file"):
+            blocked = _ensure_allowed("update_file", "write_file", "apply_patch")
+            if blocked:
+                return blocked
+            update_req = _extract_github_update_file_request(user_text) or {}
+            invalid_reason = str(update_req.get("invalid") or "").strip()
+            if invalid_reason == "unsafe_path":
+                return {"text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: caminho_de_arquivo_inseguro", "execution_result": None}
+            if invalid_reason == "missing_content":
+                return {"text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: conteúdo_ausente_para_update", "execution_result": None}
+            normalized = _github_update_file_capability(
+                path=str(update_req.get("path") or "").strip(),
+                content=str(update_req.get("content") or ""),
+                branch=str(update_req.get("branch") or "").strip() or None,
+                mode=str(update_req.get("mode") or "replace"),
+                trace_id=trace,
+            )
+
+        elif req_flags.get("batch_commit"):
+            blocked = _ensure_allowed("batch_commit", "prepare_commit")
+            if blocked:
+                return blocked
+            batch_req = _extract_github_batch_update_request(user_text) or {}
+            invalid_reason = str(batch_req.get("invalid") or "").strip()
+            if invalid_reason == "unsafe_path":
+                return {"text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: caminho_inseguro_no_lote", "execution_result": None}
+            if invalid_reason == "missing_changes":
+                return {"text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: lote_sem_alterações_válidas", "execution_result": None}
+            normalized = _github_commit_batch_capability(
+                changes=list(batch_req.get("changes") or []),
+                branch=str(batch_req.get("branch") or "").strip() or None,
+                title=str(batch_req.get("title") or "").strip() or None,
+                trace_id=trace,
+            )
+
+        elif req_flags.get("open_pr"):
+            blocked = _ensure_allowed("open_pr")
+            if blocked:
+                return blocked
+            pr_req = _extract_github_create_pr_request(user_text) or {}
+            normalized = _github_create_pull_request_capability(
+                head=str(pr_req.get("head") or "").strip(),
+                base=str(pr_req.get("base") or "").strip(),
+                title=str(pr_req.get("title") or "").strip(),
+                body=str(pr_req.get("body") or "").strip() or None,
+                trace_id=trace,
+            )
+
+        if isinstance(normalized, dict) and normalized.get("handled"):
+            return {"text": None, "execution_result": normalized}
+
+    except HTTPException as e:
+        detail = getattr(e, "detail", None)
+        if isinstance(detail, dict):
+            msg = str(detail.get("message") or detail.get("detail") or detail.get("github_error") or "").strip()
+        else:
+            msg = str(detail or "").strip()
+        return {"text": msg or "Não foi possível concluir a ação GitHub solicitada.", "execution_result": None}
+    except Exception:
+        logging.exception("GITHUB_WRITE_GOVERNED_FAILURE")
+        return {"text": "Não foi possível concluir a ação GitHub solicitada.", "execution_result": None}
 
     return {
-        "text": "Não foi possível concluir a ação GitHub solicitada.",
-        "execution_result": {
-            "handled": True,
-            "success": False,
-            "provider": "github",
-            "message": "Não foi possível concluir a ação GitHub solicitada.",
-        },
+        "text": _build_github_write_response_text(
+            org=org,
+            thread_id=thread_id,
+            payload=payload,
+            user_text=user_text,
+            db=db,
+        ),
+        "execution_result": None,
     }
-
-
 
 def _execute_capability_if_authorized(
     user_text: str,
