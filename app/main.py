@@ -5895,6 +5895,31 @@ def _is_github_write_request_or_authorization(user_text: str) -> bool:
     auth = _github_write_authorization_flags(user_text)
     return bool(req.get("requested") or auth.get("grant") or auth.get("deny_execution"))
 
+def _is_github_write_policy_request(user_text: str) -> bool:
+    txt = (user_text or "").strip()
+    low = txt.lower()
+    if not txt:
+        return False
+    if _is_github_write_request_or_authorization(txt):
+        return True
+    patterns = [
+        r"pol[ií]tica\s+de\s+escrita\s+github",
+        r"pol[ií]tica\s+operacional\s+de\s+escrita",
+        r"mostr[ea]\s+.*pol[ií]tica\s+de\s+escrita",
+        r"github[-\s]?write[-\s]?policy",
+        r"write\s+policy",
+        r"runtime_enabled",
+        r"default_mode",
+        r"allow_main_with_approval",
+        r"approval_ttl_seconds",
+        r"escrita\s+sem\s+autoriza[cç][ãa]o",
+        r"escrita\s+em\s+main",
+        r"allow_main",
+        r"modo\s+de\s+escrita\s+github",
+        r"status\s+de\s+escrita\s+github",
+    ]
+    return any(re.search(p, low, flags=re.IGNORECASE) for p in patterns)
+
 def _github_write_policy_snapshot(
     *,
     org: str,
@@ -8606,10 +8631,10 @@ def chat(
         should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
         if blocked_reply is None:
             try:
-                if _is_github_write_request_or_authorization(inp.message):
+                if _is_github_write_policy_request(inp.message):
                     capability_inventory_answer = _build_github_write_response_text(
                         org=org,
-                        thread_id=getattr(inp, "thread_id", None),
+                        thread_id=tid,
                         payload=user,
                         user_text=inp.message,
                         db=db,
@@ -12187,7 +12212,15 @@ async def chat_stream(
                 should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
                 if blocked_reply is None:
                     try:
-                        if _is_runtime_source_audit_request(message):
+                        if _is_github_write_policy_request(message):
+                            capability_inventory_answer = _build_github_write_response_text(
+                                org=org,
+                                thread_id=tid,
+                                payload=user,
+                                user_text=message,
+                                db=db,
+                            )
+                        elif _is_runtime_source_audit_request(message):
                             capability_inventory_answer = _build_runtime_source_audit_text(
                                 db=db,
                                 org=org,
