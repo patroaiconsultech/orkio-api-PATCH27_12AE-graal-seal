@@ -115,6 +115,27 @@ def _token() -> str:
 def _branch(branch: Optional[str]) -> str:
     return (branch or _env("GITHUB_BRANCH", "main") or "main").strip()
 
+def _repo_web() -> str:
+    return _env("GITHUB_REPO_WEB", "")
+
+
+@router.get("/runtime-config")
+def get_runtime_config(_admin=Depends(_require_master_admin_access)) -> Dict[str, Any]:
+    ctx = control_plane_github_context(repo=_env("GITHUB_REPO") or None)
+    return {
+        "ok": True,
+        "provider": "github",
+        "backend_repo": _env("GITHUB_REPO", "") or None,
+        "frontend_repo": _repo_web() or None,
+        "branch": _env("GITHUB_BRANCH", "main") or "main",
+        "default_base_branch": _env("GITHUB_DEFAULT_BASE_BRANCH", _env("GITHUB_BRANCH", "main")) or "main",
+        "token_present": bool(ctx.get("token_present")),
+        "write_enabled": _write_enabled(),
+        "pr_enabled": _pr_enabled(),
+        "main_direct_write_allowed": _safe_main_write_allowed(),
+    }
+
+
 
 def _guard_branch_write(branch: str) -> None:
     resolved = (branch or "").strip()
