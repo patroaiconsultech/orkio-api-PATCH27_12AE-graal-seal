@@ -886,6 +886,11 @@ _FOUNDER_GUIDANCE_TURNS = int(os.getenv("FOUNDER_GUIDANCE_TURNS", "4") or "4")
 _founder_guidance_lock = _threading.Lock()
 _founder_guidance_state: dict = {}  # {(org, thread_id): {"action": str, "turns_left": int, "goal": str}}
 
+_GITHUB_WRITE_APPROVAL_TTL_SECONDS = int(os.getenv("GITHUB_WRITE_APPROVAL_TTL_SECONDS", "3600") or "3600")
+_github_write_lock = _threading.Lock()
+_github_write_approval_state: dict = {}  # {(org, thread_id, user_id): approval_dict}
+
+
 
 def _parse_email_recipients(value: Any) -> List[str]:
     if value is None:
@@ -5626,7 +5631,10 @@ def _build_runtime_capabilities_payload(db: Optional[Session] = None, org: Optio
             "branch": default_branch,
         })
     github_available = bool(github_ctx.get("token_present") and (github_repo or github_repo_web))
-    github_mode = "governed_pr_only" if github_available else "unavailable"
+    github_write_runtime_enabled = github_available and _github_write_runtime_enabled()
+    github_allow_main = github_write_runtime_enabled and _github_write_allow_main_with_approval()
+    github_default_mode = _github_write_default_mode()
+    github_mode = "governed_write_control" if github_write_runtime_enabled else ("governed_pr_only" if github_available else "unavailable")
 
     available_ops: List[str] = []
     if github_available:
@@ -5634,7 +5642,15 @@ def _build_runtime_capabilities_payload(db: Optional[Session] = None, org: Optio
             "github_repo_read",
             "github_repo_audit",
             "github_pr_prepare",
+            "github_write_governed",
+            "github_write_probe",
         ])
+        if github_write_runtime_enabled:
+            available_ops.extend([
+                "github_branch_create",
+                "github_file_create",
+                "github_repo_fix",
+            ])
 
     payload: Dict[str, Any] = {
         "available": available_ops,
@@ -5648,8 +5664,11 @@ def _build_runtime_capabilities_payload(db: Optional[Session] = None, org: Optio
         "github": {
             "available": github_available,
             "read_enabled": github_available,
-            "write_enabled": False,
+            "write_enabled": github_write_runtime_enabled,
             "propose_patch_enabled": github_available,
+            "approval_required": github_available,
+            "default_mode": github_default_mode,
+            "main_write_allowed_with_explicit_approval": github_allow_main,
             "repositories": repo_labels,
             "repository_values": repository_values,
             "repository_details": repository_details,
@@ -5660,6 +5679,13 @@ def _build_runtime_capabilities_payload(db: Optional[Session] = None, org: Optio
             "mode": github_mode,
             "control_plane_only": True,
             "branch": default_branch,
+            "allowed_write_actions": [
+                "create_branch",
+                "write_file",
+                "apply_patch",
+                "prepare_commit",
+                "open_pr",
+            ] + (["write_main"] if github_allow_main else []),
         },
     }
     return payload
@@ -5689,6 +5715,7 @@ def _is_github_access_request(user_text: str) -> bool:
 
 
 
+
 def _build_github_runtime_status_text(db: Optional[Session] = None, org: Optional[str] = None) -> str:
     capabilities = _build_runtime_capabilities_payload(db=db, org=org)
     github = capabilities.get("github") if isinstance(capabilities.get("github"), dict) else {}
@@ -5703,6 +5730,9 @@ def _build_github_runtime_status_text(db: Optional[Session] = None, org: Optiona
         )
     mode = str(github.get("mode") or "governed_pr_only").strip()
     branch = str(github.get("branch") or "main").strip() or "main"
+    write_enabled = bool(github.get("write_enabled"))
+    allow_main = bool(github.get("main_write_allowed_with_explicit_approval"))
+    approval_required = bool(github.get("approval_required", True))
 
     lines = [
         "STATUS GITHUB:",
@@ -5710,13 +5740,349 @@ def _build_github_runtime_status_text(db: Optional[Session] = None, org: Optiona
         f"- branch base: {branch}",
         f"- backend_repo: {backend_repo or 'n/d'}",
         f"- frontend_repo: {frontend_repo or 'n/d'}",
+        f"- leitura: {'habilitada' if available else 'indisponível'}",
+        f"- escrita_governada: {'habilitada' if write_enabled else 'bloqueada'}",
+        f"- aprovação_humana: {'obrigatória' if approval_required else 'não'}",
+        f"- escrita_na_main_por_exceção: {'permitida' if allow_main else 'bloqueada'}",
     ]
-    if mode == "governed_pr_only":
-        lines.append("- escrita_direta: bloqueada")
-        lines.append("- aprovação_humana: obrigatória")
-    else:
-        lines.append("- escrita_direta: governada")
     return "\n".join(lines)
+
+def _github_write_default_mode() -> str:
+    raw = _clean_env(os.getenv("GITHUB_WRITE_DEFAULT_MODE", "propose_only"), default="propose_only").strip().lower()
+    if raw not in {"read_only", "propose_only", "awaiting_human_approval", "write_authorized", "pr_only"}:
+        raw = "propose_only"
+    return raw
+
+def _github_write_runtime_enabled() -> bool:
+    return _env_flag("GITHUB_WRITE_RUNTIME_ENABLED", False)
+
+def _github_write_allow_main_with_approval() -> bool:
+    return _env_flag("GITHUB_WRITE_ALLOW_MAIN_WITH_APPROVAL", False)
+
+def _payload_can_govern_github_writes(payload: Optional[Dict[str, Any]]) -> bool:
+    return _payload_has_catalog_privileged_access(payload)
+
+def _github_write_subject(payload: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(payload, dict):
+        return "unknown"
+    return str(payload.get("email") or payload.get("sub") or "unknown").strip() or "unknown"
+
+def _github_write_approval_key(org: str, thread_id: Optional[str], user_id: Optional[str]) -> str:
+    return f"{org}::{thread_id or 'global'}::{user_id or 'unknown'}"
+
+def _github_write_cleanup_locked() -> None:
+    now = now_ts()
+    stale = []
+    for key, item in list(_github_write_approval_state.items()):
+        if not isinstance(item, dict):
+            stale.append(key)
+            continue
+        expires_at = int(item.get("expires_at") or 0)
+        if expires_at and expires_at < now:
+            stale.append(key)
+    for key in stale:
+        _github_write_approval_state.pop(key, None)
+
+def _github_write_get_active_approval(org: str, thread_id: Optional[str], payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    user_id = str((payload or {}).get("sub") or "").strip()
+    key = _github_write_approval_key(org, thread_id, user_id)
+    with _github_write_lock:
+        _github_write_cleanup_locked()
+        item = _github_write_approval_state.get(key)
+        return dict(item) if isinstance(item, dict) else None
+
+def _github_write_clear_approval(org: str, thread_id: Optional[str], payload: Optional[Dict[str, Any]]) -> None:
+    user_id = str((payload or {}).get("sub") or "").strip()
+    key = _github_write_approval_key(org, thread_id, user_id)
+    with _github_write_lock:
+        _github_write_approval_state.pop(key, None)
+
+def _github_extract_scoped_files(user_text: str) -> List[str]:
+    txt = (user_text or "").strip()
+    if not txt:
+        return []
+    lines = txt.splitlines()
+    in_scope = False
+    out: List[str] = []
+    trigger_patterns = [
+        r"autorizo\s+apenas\s+(estes|os)\s+arquivos",
+        r"only\s+these\s+files",
+        r"arquivos\s+permitidos",
+    ]
+    for raw_line in lines:
+        line = str(raw_line or "").rstrip()
+        low = line.strip().lower()
+        if not in_scope and any(re.search(p, low, flags=re.IGNORECASE) for p in trigger_patterns):
+            in_scope = True
+            continue
+        if in_scope:
+            if not low:
+                break
+            m = re.match(r"^\s*[-•]\s*([A-Za-z0-9_./\-]{1,240})\s*$", line)
+            if not m:
+                # allow plain single-path line
+                m = re.match(r"^\s*([A-Za-z0-9_./\-]{1,240})\s*$", line)
+            if not m:
+                break
+            path = str(m.group(1) or "").strip()
+            if path and path not in out:
+                out.append(path)
+    return out
+
+def _github_extract_paths_from_text(user_text: str) -> List[str]:
+    txt = (user_text or "").strip()
+    if not txt:
+        return []
+    found = re.findall(r"([A-Za-z0-9_./\-]+\.(?:py|ts|tsx|js|jsx|json|md|yml|yaml|txt|sql|css|html))", txt, flags=re.IGNORECASE)
+    unique: List[str] = []
+    for p in found:
+        p = str(p or "").strip()
+        if p and p not in unique:
+            unique.append(p)
+    return unique[:50]
+
+def _github_write_authorization_flags(user_text: str) -> Dict[str, Any]:
+    txt = (user_text or "").strip()
+    low = txt.lower()
+    scope_files = _github_extract_scoped_files(txt)
+    flags = {
+        "grant": False,
+        "deny_execution": False,
+        "deny_merge": False,
+        "allow_branch": False,
+        "allow_patch": False,
+        "allow_commit": False,
+        "allow_pr": False,
+        "allow_main": False,
+        "scope_files": scope_files,
+    }
+    if not txt:
+        return flags
+    flags["deny_execution"] = bool(re.search(r"(n[ãa]o\s+autorizo\s+execu[cç][ãa]o|revogo\s+autoriza[cç][ãa]o)", low, flags=re.IGNORECASE))
+    flags["deny_merge"] = bool(re.search(r"(n[ãa]o\s+autorizo\s+merge)", low, flags=re.IGNORECASE))
+    flags["allow_branch"] = bool(re.search(r"(autorizo\s+criar\s+branch|autorizo\s+branch)", low, flags=re.IGNORECASE))
+    flags["allow_patch"] = bool(re.search(r"(autorizo\s+aplicar\s+patch|autorizo\s+patch)", low, flags=re.IGNORECASE))
+    flags["allow_commit"] = bool(re.search(r"(autorizo\s+preparar\s+commit|autorizo\s+commit\s+direto|autorizo\s+commit)", low, flags=re.IGNORECASE))
+    flags["allow_pr"] = bool(re.search(r"(autorizo\s+abrir\s+pr|autorizo\s+pr)", low, flags=re.IGNORECASE))
+    flags["allow_main"] = bool(re.search(r"(autorizo\s+escrever\s+na\s+main|autorizo\s+patch\s+direto\s+na\s+main|autorizo\s+main)", low, flags=re.IGNORECASE))
+    flags["grant"] = any(bool(flags[k]) for k in ("allow_branch", "allow_patch", "allow_commit", "allow_pr", "allow_main"))
+    return flags
+
+def _github_write_request_flags(user_text: str) -> Dict[str, Any]:
+    txt = (user_text or "").strip()
+    low = txt.lower()
+    requested = {
+        "requested": False,
+        "create_branch": False,
+        "apply_patch": False,
+        "prepare_commit": False,
+        "open_pr": False,
+        "write_main": False,
+        "paths": _github_extract_paths_from_text(txt),
+    }
+    if not txt:
+        return requested
+    requested["create_branch"] = bool(re.search(r"(crie\s+uma\s+branch|create\s+a\s+branch|branch\s+tempor[aá]ria)", low, flags=re.IGNORECASE))
+    requested["apply_patch"] = bool(re.search(r"(aplique\s+o\s+patch|aplique\s+essa\s+altera[cç][ãa]o|edite\s+o\s+arquivo|crie\s+o\s+arquivo|fa[cç]a\s+essa\s+altera[cç][ãa]o|apply\s+the\s+patch|write\s+the\s+file)", low, flags=re.IGNORECASE))
+    requested["prepare_commit"] = bool(re.search(r"(prepare\s+o\s+commit|preparar\s+commit|commit\s+direto|prepare\s+commit)", low, flags=re.IGNORECASE))
+    requested["open_pr"] = bool(re.search(r"(abrir\s+pr|open\s+pr|pull\s+request)", low, flags=re.IGNORECASE))
+    requested["write_main"] = bool(re.search(r"(na\s+main|write\s+to\s+main|escrev[ae]\s+r?\s+na\s+main|patch\s+direto\s+na\s+main)", low, flags=re.IGNORECASE))
+    requested["requested"] = any(bool(requested[k]) for k in ("create_branch", "apply_patch", "prepare_commit", "open_pr", "write_main"))
+    return requested
+
+def _is_github_write_request_or_authorization(user_text: str) -> bool:
+    req = _github_write_request_flags(user_text)
+    auth = _github_write_authorization_flags(user_text)
+    return bool(req.get("requested") or auth.get("grant") or auth.get("deny_execution"))
+
+def _github_write_policy_snapshot(
+    *,
+    org: str,
+    thread_id: Optional[str],
+    payload: Optional[Dict[str, Any]],
+    db: Optional[Session] = None,
+) -> Dict[str, Any]:
+    capabilities = _build_runtime_capabilities_payload(db=db, org=org)
+    github = capabilities.get("github") if isinstance(capabilities.get("github"), dict) else {}
+    approval = _github_write_get_active_approval(org, thread_id, payload)
+    return {
+        "org_slug": org,
+        "subject": _github_write_subject(payload),
+        "can_govern": _payload_can_govern_github_writes(payload),
+        "github_available": bool(github.get("available")),
+        "read_enabled": bool(github.get("read_enabled")),
+        "write_enabled": bool(github.get("write_enabled")),
+        "approval_required": bool(github.get("approval_required", True)),
+        "mode": str(github.get("mode") or _github_write_default_mode()).strip() or _github_write_default_mode(),
+        "main_write_allowed_with_explicit_approval": bool(github.get("main_write_allowed_with_explicit_approval")),
+        "active_approval": approval,
+        "allowed_write_actions": list(github.get("allowed_write_actions") or []),
+        "branch": str(github.get("branch") or "main").strip() or "main",
+        "repository_targets": github.get("repository_targets") if isinstance(github.get("repository_targets"), dict) else {},
+    }
+
+def _format_github_write_policy_text(snapshot: Dict[str, Any]) -> str:
+    approval = snapshot.get("active_approval") if isinstance(snapshot.get("active_approval"), dict) else {}
+    targets = snapshot.get("repository_targets") if isinstance(snapshot.get("repository_targets"), dict) else {}
+    lines = [
+        "POLÍTICA DE ESCRITA GITHUB:",
+        f"- github_available: {bool(snapshot.get('github_available'))}",
+        f"- read_enabled: {bool(snapshot.get('read_enabled'))}",
+        f"- write_enabled: {bool(snapshot.get('write_enabled'))}",
+        f"- approval_required: {bool(snapshot.get('approval_required'))}",
+        f"- mode: {snapshot.get('mode') or 'n/d'}",
+        f"- main_write_allowed_with_explicit_approval: {bool(snapshot.get('main_write_allowed_with_explicit_approval'))}",
+        f"- backend_repo: {targets.get('backend') or 'n/d'}",
+        f"- frontend_repo: {targets.get('frontend') or 'n/d'}",
+    ]
+    if approval:
+        lines.append("APROVAÇÃO ATIVA:")
+        lines.append(f"- approval_id: {approval.get('approval_id') or 'n/d'}")
+        lines.append(f"- scope: {approval.get('scope') or 'n/d'}")
+        lines.append(f"- allow_main: {bool(approval.get('allow_main'))}")
+        lines.append(f"- actions_allowed: {', '.join(list(approval.get('actions_allowed') or [])) or 'n/d'}")
+        scope_files = list(approval.get("scope_files") or [])
+        lines.append(f"- scope_files: {', '.join(scope_files) if scope_files else 'livre'}")
+    else:
+        lines.append("APROVAÇÃO ATIVA:")
+        lines.append("- nenhuma")
+    return "\n".join(lines)
+
+def _github_store_write_approval(
+    *,
+    org: str,
+    thread_id: Optional[str],
+    payload: Optional[Dict[str, Any]],
+    auth_flags: Dict[str, Any],
+) -> Dict[str, Any]:
+    user_id = str((payload or {}).get("sub") or "").strip()
+    key = _github_write_approval_key(org, thread_id, user_id)
+    allowed_actions: List[str] = []
+    if auth_flags.get("allow_branch"):
+        allowed_actions.append("create_branch")
+    if auth_flags.get("allow_patch"):
+        allowed_actions.append("apply_patch")
+        allowed_actions.append("write_file")
+    if auth_flags.get("allow_commit"):
+        allowed_actions.append("prepare_commit")
+    if auth_flags.get("allow_pr"):
+        allowed_actions.append("open_pr")
+    if auth_flags.get("allow_main"):
+        allowed_actions.append("write_main")
+    allowed_actions = list(dict.fromkeys(allowed_actions))
+    now = now_ts()
+    approval = {
+        "approval_id": f"apr_{new_id()[:12]}",
+        "approved_by": _github_write_subject(payload),
+        "approved_at": now,
+        "expires_at": now + max(_GITHUB_WRITE_APPROVAL_TTL_SECONDS, 60),
+        "org_slug": org,
+        "thread_id": thread_id or "global",
+        "user_id": user_id or "unknown",
+        "scope": "main" if auth_flags.get("allow_main") else "branch",
+        "allow_main": bool(auth_flags.get("allow_main")),
+        "deny_merge": bool(auth_flags.get("deny_merge")),
+        "actions_allowed": allowed_actions,
+        "scope_files": list(auth_flags.get("scope_files") or []),
+    }
+    with _github_write_lock:
+        _github_write_cleanup_locked()
+        _github_write_approval_state[key] = approval
+    return approval
+
+def _build_github_write_response_text(
+    *,
+    org: str,
+    thread_id: Optional[str],
+    payload: Optional[Dict[str, Any]],
+    user_text: str,
+    db: Optional[Session] = None,
+) -> str:
+    snapshot = _github_write_policy_snapshot(org=org, thread_id=thread_id, payload=payload, db=db)
+    auth_flags = _github_write_authorization_flags(user_text)
+    req_flags = _github_write_request_flags(user_text)
+    can_govern = bool(snapshot.get("can_govern"))
+
+    if auth_flags.get("deny_execution"):
+        _github_write_clear_approval(org, thread_id, payload)
+        return "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: autorização_revogada"
+
+    if auth_flags.get("grant"):
+        if not can_govern:
+            return "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: usuário_sem_permissão_de_governança"
+        approval = _github_store_write_approval(org=org, thread_id=thread_id, payload=payload, auth_flags=auth_flags)
+        lines = [
+            "AUTORIZAÇÃO DE ESCRITA REGISTRADA.",
+            f"- approval_id: {approval.get('approval_id')}",
+            f"- scope: {approval.get('scope')}",
+            f"- allow_main: {bool(approval.get('allow_main'))}",
+            f"- actions_allowed: {', '.join(list(approval.get('actions_allowed') or [])) or 'n/d'}",
+            f"- expires_at: {approval.get('expires_at')}",
+        ]
+        scope_files = list(approval.get("scope_files") or [])
+        if scope_files:
+            lines.append(f"- scope_files: {', '.join(scope_files)}")
+        if approval.get("deny_merge"):
+            lines.append("- merge: não autorizado")
+        lines.append("")
+        lines.append(_format_github_write_policy_text(_github_write_policy_snapshot(org=org, thread_id=thread_id, payload=payload, db=db)))
+        return "\n".join(lines)
+
+    if not req_flags.get("requested"):
+        return _format_github_write_policy_text(snapshot)
+
+    approval = snapshot.get("active_approval") if isinstance(snapshot.get("active_approval"), dict) else {}
+    if not approval:
+        return "SEM AUTORIZAÇÃO DE ESCRITA."
+
+    if not bool(snapshot.get("write_enabled")):
+        return "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: escrita_github_desabilitada"
+
+    if req_flags.get("write_main"):
+        if not bool(approval.get("allow_main")):
+            return "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: escrita_na_main_sem_autorização_explícita"
+        if not bool(snapshot.get("main_write_allowed_with_explicit_approval")):
+            return "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: main_bloqueada_por_politica"
+
+    requested_paths = list(req_flags.get("paths") or [])
+    scope_files = list(approval.get("scope_files") or [])
+    if scope_files and requested_paths:
+        unauthorized = [p for p in requested_paths if p not in scope_files]
+        if unauthorized:
+            return (
+                "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n"
+                f"- motivo: arquivo_fora_do_escopo_autorizado\n- arquivos: {', '.join(unauthorized)}"
+            )
+
+    try:
+        raw = orion_github_execute(OrionExecuteIn(message=user_text))
+        normalized = _normalize_orion_runtime_execution_result(raw if isinstance(raw, dict) else {})
+        if not normalized.get("handled"):
+            normalized["handled"] = True
+        if not normalized.get("success"):
+            return normalized.get("message") or "Não foi possível concluir a ação GitHub solicitada."
+        base = _build_execution_result_payload(normalized)
+        lines = [
+            "EXECUÇÃO GITHUB GOVERNADA:",
+            f"- approval_id: {approval.get('approval_id') or 'n/d'}",
+            f"- scope: {approval.get('scope') or 'n/d'}",
+            f"- write_target: {'main' if req_flags.get('write_main') else 'branch'}",
+            f"- approved_by: {approval.get('approved_by') or 'n/d'}",
+            base,
+        ]
+        if approval.get("deny_merge"):
+            lines.append("MERGE: não autorizado automaticamente.")
+        return "\n".join(lines)
+    except HTTPException as e:
+        detail = getattr(e, "detail", None)
+        if isinstance(detail, dict):
+            msg = str(detail.get("message") or detail.get("detail") or detail.get("github_error") or "").strip()
+        else:
+            msg = str(detail or "").strip()
+        return msg or "Não foi possível concluir a ação GitHub solicitada."
+    except Exception:
+        logging.exception("GITHUB_WRITE_GOVERNED_FAILURE")
+        return "Não foi possível concluir a ação GitHub solicitada."
 
 
 def _hidden_catalog_request_flags(user_text: str) -> Dict[str, Any]:
@@ -8240,7 +8606,15 @@ def chat(
         should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
         if blocked_reply is None:
             try:
-                if _is_runtime_source_audit_request(inp.message):
+                if _is_github_write_request_or_authorization(inp.message):
+                    capability_inventory_answer = _build_github_write_response_text(
+                        org=org,
+                        thread_id=getattr(inp, "thread_id", None),
+                        payload=user,
+                        user_text=inp.message,
+                        db=db,
+                    )
+                elif _is_runtime_source_audit_request(inp.message):
                     capability_inventory_answer = _build_runtime_source_audit_text(
                         db=db,
                         org=org,
@@ -10970,6 +11344,13 @@ def get_runtime_source_audit(x_org_slug: Optional[str] = Header(default=None), u
     if not privileged:
         raise HTTPException(status_code=403, detail="Privileged catalog required")
     return _runtime_source_audit_snapshot(db=db, org=org, privileged=True)
+
+
+@app.get("/api/agents/github-write-policy")
+def get_github_write_policy(thread_id: Optional[str] = None, x_org_slug: Optional[str] = Header(default=None), user=Depends(get_current_user), db: Session = Depends(get_db)):
+    org = get_request_org(user, x_org_slug)
+    ensure_core_agents(db, org)
+    return _github_write_policy_snapshot(org=org, thread_id=thread_id, payload=user, db=db)
 
 
 
