@@ -5456,16 +5456,32 @@ def _runtime_available_agents(db: Optional[Session] = None, org: Optional[str] =
     return ordered
 
 
+
 def _build_runtime_capabilities_payload(db: Optional[Session] = None, org: Optional[str] = None) -> Dict[str, Any]:
     available_agents = _runtime_available_agents(db, org)
     github_ctx = control_plane_github_context(repo=_clean_env(os.getenv("GITHUB_REPO", "")) or None)
     github_repo = _clean_env(os.getenv("GITHUB_REPO", ""))
     github_repo_web = _clean_env(os.getenv("GITHUB_REPO_WEB", ""))
+    default_branch = _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main"
     repo_labels: List[str] = []
+    repository_values: List[str] = []
+    repository_details: List[Dict[str, Any]] = []
     if github_repo:
         repo_labels.append("backend")
+        repository_values.append(github_repo)
+        repository_details.append({
+            "kind": "backend",
+            "repo": github_repo,
+            "branch": default_branch,
+        })
     if github_repo_web:
         repo_labels.append("frontend")
+        repository_values.append(github_repo_web)
+        repository_details.append({
+            "kind": "frontend",
+            "repo": github_repo_web,
+            "branch": default_branch,
+        })
     github_available = bool(github_ctx.get("token_present") and (github_repo or github_repo_web))
     github_mode = "governed_pr_only" if github_available else "unavailable"
 
@@ -5490,16 +5506,19 @@ def _build_runtime_capabilities_payload(db: Optional[Session] = None, org: Optio
             "write_enabled": False,
             "propose_patch_enabled": github_available,
             "repositories": repo_labels,
+            "repository_values": repository_values,
+            "repository_details": repository_details,
             "repository_targets": {
                 "backend": github_repo or None,
                 "frontend": github_repo_web or None,
             },
             "mode": github_mode,
             "control_plane_only": True,
-            "branch": _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main",
+            "branch": default_branch,
         },
     }
     return payload
+
 
 
 def _get_runtime_capability_registry(db: Optional[Session] = None, org: Optional[str] = None) -> Dict[str, Any]:
@@ -5524,12 +5543,14 @@ def _is_github_access_request(user_text: str) -> bool:
     return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
 
 
+
 def _build_github_runtime_status_text(db: Optional[Session] = None, org: Optional[str] = None) -> str:
     capabilities = _build_runtime_capabilities_payload(db=db, org=org)
     github = capabilities.get("github") if isinstance(capabilities.get("github"), dict) else {}
     available = bool(github.get("available"))
-    repositories = list(github.get("repositories") or [])
-    repos_label = ", ".join(repositories) if repositories else "sem repositórios declarados"
+    targets = github.get("repository_targets") if isinstance(github.get("repository_targets"), dict) else {}
+    backend_repo = str(targets.get("backend") or "").strip()
+    frontend_repo = str(targets.get("frontend") or "").strip()
     if not available:
         return (
             "Não tenho acesso GitHub operacional neste ambiente. "
@@ -5537,25 +5558,30 @@ def _build_github_runtime_status_text(db: Optional[Session] = None, org: Optiona
         )
     mode = str(github.get("mode") or "governed_pr_only").strip()
     branch = str(github.get("branch") or "main").strip() or "main"
-    if mode == "governed_pr_only":
-        return (
-            "Tenho acesso governado ao GitHub em modo PR-only. "
-            f"Posso ler os repositórios declarados ({repos_label}) e preparar propostas de alteração na branch base {branch}, "
-            "mas não aplico mudanças diretamente em produção. "
-            "Qualquer execução depende de aprovação do Admin Master."
-        )
-    return (
-        "O GitHub está disponível em runtime com governança ativa. "
-        f"Repos declarados: {repos_label}. "
-        "A escrita direta continua bloqueada fora da trilha aprovada."
-    )
 
+    lines = [
+        "STATUS GITHUB:",
+        f"- modo: {mode}",
+        f"- branch base: {branch}",
+        f"- backend_repo: {backend_repo or 'n/d'}",
+        f"- frontend_repo: {frontend_repo or 'n/d'}",
+    ]
+    if mode == "governed_pr_only":
+        lines.append("- escrita_direta: bloqueada")
+        lines.append("- aprovação_humana: obrigatória")
+    else:
+        lines.append("- escrita_direta: governada")
+    return "\n".join(lines)
 
 def _build_capability_inventory_text(db: Optional[Session] = None, org: Optional[str] = None) -> str:
     reg = _build_runtime_capabilities_payload(db=db, org=org)
     multiagent = reg.get("multiagent") if isinstance(reg.get("multiagent"), dict) else {}
     github = reg.get("github") if isinstance(reg.get("github"), dict) else {}
     available_agents = list(multiagent.get("available_agents") or [])
+    targets = github.get("repository_targets") if isinstance(github.get("repository_targets"), dict) else {}
+    backend_repo = str(targets.get("backend") or "").strip()
+    frontend_repo = str(targets.get("frontend") or "").strip()
+    branch = str(github.get("branch") or "main").strip() or "main"
     lines = []
     if available_agents:
         lines.append("Multiagente operacional:")
@@ -5569,12 +5595,13 @@ def _build_capability_inventory_text(db: Optional[Session] = None, org: Optional
         lines.append(f"- modo: {github.get('mode') or 'governed_pr_only'}")
         lines.append(f"- leitura habilitada: {bool(github.get('read_enabled'))}")
         lines.append("- escrita direta habilitada: False")
-        lines.append("- repositórios: " + ", ".join(list(github.get("repositories") or []) or ["n/d"]))
+        lines.append(f"- branch base: {branch}")
+        lines.append(f"- backend_repo: {backend_repo or 'n/d'}")
+        lines.append(f"- frontend_repo: {frontend_repo or 'n/d'}")
     else:
         lines.append("GitHub operacional:")
         lines.append("- indisponível neste ambiente")
     return "\n".join(lines)
-
 
 def _is_capability_inventory_request(user_text: str) -> bool:
     txt = (user_text or "").strip().lower()
@@ -5886,18 +5913,27 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
 
     provider = (result.get("provider") or "provider").strip()
     repo = (result.get("repo") or "").strip()
+    backend_repo = (result.get("backend_repo") or "").strip()
+    frontend_repo = (result.get("frontend_repo") or "").strip()
     branch = (result.get("branch") or "").strip()
     path = (result.get("path") or "").strip()
     commit_sha = (result.get("commit_sha") or "").strip()
     event = (result.get("event") or "").strip()
+    mode = (result.get("mode") or "").strip()
 
     parts = ["Ação executada com confirmação operacional verificável."]
     if event:
         parts.append(f"event: {event}")
+    elif mode:
+        parts.append(f"mode: {mode}")
     if provider:
         parts.append(f"provider: {provider}")
     if repo:
         parts.append(f"repo: {repo}")
+    if backend_repo:
+        parts.append(f"backend_repo: {backend_repo}")
+    if frontend_repo:
+        parts.append(f"frontend_repo: {frontend_repo}")
     if branch:
         parts.append(f"branch: {branch}")
 
@@ -5936,6 +5972,9 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     total_entries = result.get("total_entries")
     dirs = result.get("dirs") if isinstance(result.get("dirs"), list) else None
     confidence = result.get("confidence")
+    repository_details = result.get("repository_details") if isinstance(result.get("repository_details"), list) else None
+    backend_root_entries = result.get("backend_root_entries") if isinstance(result.get("backend_root_entries"), list) else None
+    frontend_root_entries = result.get("frontend_root_entries") if isinstance(result.get("frontend_root_entries"), list) else None
 
     if commit_sha:
         parts.append(f"commit: {commit_sha[:12]}")
@@ -5964,6 +6003,24 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
             parts.append(f"confidence: {float(confidence):.2f}")
         except Exception:
             parts.append(f"confidence: {confidence}")
+
+    if repository_details:
+        parts.append("repository_details:")
+        for item in repository_details[:10]:
+            if not isinstance(item, dict):
+                continue
+            parts.append(
+                f"- {str(item.get('kind') or 'repo')}: {str(item.get('repo') or '').strip()} "
+                f"(branch={str(item.get('branch') or '').strip() or 'main'})"
+            )
+
+    if backend_root_entries is not None:
+        parts.append("backend_root_entries:")
+        parts.extend(f"- {str(item)}" for item in backend_root_entries[:20])
+
+    if frontend_root_entries is not None:
+        parts.append("frontend_root_entries:")
+        parts.extend(f"- {str(item)}" for item in frontend_root_entries[:20])
 
     if technical_summary:
         parts.append("technical_summary:")
@@ -7199,12 +7256,15 @@ def _github_create_pull_request_capability(*, head: str, base: str, title: str, 
 
 
 
+
 def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, Any]:
     data = dict(raw or {})
     ok = bool(data.get("ok"))
-    repo = str(data.get("repo") or _clean_env(os.getenv("GITHUB_REPO", ""))).strip()
-    branch = str(data.get("branch") or "").strip()
-    base_branch = str(data.get("base_branch") or "").strip()
+    backend_repo = str(data.get("backend_repo") or "").strip()
+    frontend_repo = str(data.get("frontend_repo") or "").strip()
+    repo = str(data.get("repo") or backend_repo or _clean_env(os.getenv("GITHUB_REPO", ""))).strip()
+    branch = str(data.get("branch") or data.get("default_branch") or "").strip()
+    base_branch = str(data.get("base_branch") or data.get("default_branch") or "").strip()
     path = str(data.get("path") or "").strip()
 
     normalized: Dict[str, Any] = {
@@ -7212,10 +7272,29 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         "success": ok,
         "provider": "github",
         "repo": repo,
+        "backend_repo": backend_repo,
+        "frontend_repo": frontend_repo,
+        "repository_targets": {
+            "backend": backend_repo or None,
+            "frontend": frontend_repo or None,
+        },
         "branch": branch,
         "base_branch": base_branch,
         "path": path,
     }
+
+    if data.get("mode"):
+        normalized["mode"] = str(data.get("mode") or "").strip()
+    if data.get("event"):
+        normalized["event"] = str(data.get("event") or "").strip()
+    if isinstance(data.get("repositories"), list):
+        normalized["repositories"] = list(data.get("repositories") or [])
+    if isinstance(data.get("repository_details"), list):
+        normalized["repository_details"] = list(data.get("repository_details") or [])
+    if isinstance(data.get("backend_root_entries"), list):
+        normalized["backend_root_entries"] = list(data.get("backend_root_entries") or [])
+    if isinstance(data.get("frontend_root_entries"), list):
+        normalized["frontend_root_entries"] = list(data.get("frontend_root_entries") or [])
 
     commit = data.get("commit") if isinstance(data.get("commit"), dict) else {}
     if commit:
@@ -7255,6 +7334,7 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         normalized["message"] = detail_msg or "Não foi possível concluir a ação GitHub solicitada."
 
     return normalized
+
 
 
 def _should_execute_runtime_from_enrichment(runtime_enrichment: Optional[Dict[str, Any]]) -> bool:
@@ -11078,11 +11158,6 @@ async def chat_stream(
         try:
             stream_history_seed = list(prev_history_seed)
             previous_agent_payload: Optional[Dict[str, Any]] = None
-            final_visible_answer = ""
-            final_visible_agent_id = None
-            final_visible_agent_name = ""
-            final_visible_voice_id = None
-            final_visible_avatar_url = None
             for ag in target_agents:
                 if await request.is_disconnected():
                     return
@@ -11427,11 +11502,6 @@ async def chat_stream(
                     continue
 
                 ans = _apply_truthful_execution_mode((ans_obj.get("text") or "").strip(), execution_result=execution_result)
-                final_visible_answer = ans or final_visible_answer
-                final_visible_agent_id = ag_id
-                final_visible_agent_name = ag_name
-                final_visible_voice_id = ag_voice_id
-                final_visible_avatar_url = ag_avatar_url
 
                 # Persist assistant message (DB path can fail; must rollback)
                 try:
@@ -11642,16 +11712,7 @@ async def chat_stream(
 
             # done global
             try:
-                payload = {
-                    "done": True,
-                    "thread_id": tid,
-                    "trace_id": trace_id,
-                    "final_text": final_visible_answer or "",
-                    "agent_id": final_visible_agent_id,
-                    "agent_name": final_visible_agent_name or "",
-                    "voice_id": final_visible_voice_id,
-                    "avatar_url": final_visible_avatar_url,
-                }
+                payload = {"done": True, "thread_id": tid, "trace_id": trace_id}
                 if final_runtime_enrichment and final_runtime_enrichment.get("runtime_hints"):
                     payload["runtime_hints"] = final_runtime_enrichment.get("runtime_hints")
                 yield sse_execution(
