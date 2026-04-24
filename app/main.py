@@ -5718,6 +5718,7 @@ def _build_github_runtime_status_text(db: Optional[Session] = None, org: Optiona
         lines.append("- escrita_direta: governada")
     return "\n".join(lines)
 
+
 def _hidden_catalog_request_flags(user_text: str) -> Dict[str, Any]:
     txt = (user_text or "").strip().lower()
     if not txt:
@@ -5747,8 +5748,6 @@ def _hidden_catalog_request_flags(user_text: str) -> Dict[str, Any]:
         r"equipe\s+t[eé]cnica",
         r"technical\s+team",
         r"agentes\s+t[eé]cnic",
-        r"auditoria",
-        r"auditor",
     ]
     return {
         "requested": any(re.search(p, txt, flags=re.IGNORECASE) for p in hidden_patterns),
@@ -5758,6 +5757,198 @@ def _hidden_catalog_request_flags(user_text: str) -> Dict[str, Any]:
 
 def _is_hidden_catalog_request(user_text: str) -> bool:
     return bool(_hidden_catalog_request_flags(user_text).get("requested"))
+
+def _is_runtime_source_audit_request(user_text: str) -> bool:
+    txt = (user_text or "").strip().lower()
+    if not txt:
+        return False
+    patterns = [
+        r"auditoria\s+de\s+fonte",
+        r"runtime\s+source\s+audit",
+        r"source\s+audit",
+        r"diverg[êe]ncias?\s+entre\s+fontes",
+        r"cat[aá]logo\s+p[úu]blico",
+        r"cat[aá]logo\s+privilegiad",
+        r"seed\s+oculto",
+        r"ocultos?\s+e\s+internos?",
+        r"agentes\s+com\s+hidden\s*=\s*true",
+        r"agentes\s+com\s+internal\s*=\s*true",
+        r"agentes\s+com\s+system\s*=\s*true",
+        r"agentes\s+system",
+        r"veredito\s+final",
+        r"consist[êe]ncia\s+entre\s+fontes",
+    ]
+    return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
+
+def _runtime_role_is_technical(role: Any) -> bool:
+    normalized = str(role or "").strip().lower()
+    return normalized in {"orchestrator", "cto", "architect", "engineer", "auditor", "devops", "specialist"}
+
+def _runtime_catalog_items_to_lines(items: List[Dict[str, Any]]) -> List[str]:
+    if not items:
+        return ["- nenhum"]
+    lines: List[str] = []
+    for item in items:
+        name = str(item.get("name") or item.get("slug") or "n/d").strip()
+        lines.append(
+            "- "
+            + f"{name} | id: {item.get('id') or 'n/d'} | slug: {item.get('slug') or 'n/d'} | "
+            + f"role: {item.get('role') or 'n/d'} | hidden: {bool(item.get('hidden'))} | "
+            + f"internal: {bool(item.get('internal'))} | system: {bool(item.get('system'))} | "
+            + f"available_to_runtime: {bool(item.get('available_to_runtime', True))}"
+        )
+    return lines
+
+def _runtime_source_audit_snapshot(
+    db: Optional[Session] = None,
+    org: Optional[str] = None,
+    privileged: bool = False,
+) -> Dict[str, Any]:
+    public_catalog = _runtime_catalog(db, org, include_hidden=False, privileged=False)
+    seed_items = [item for item in _load_hidden_agent_seed() if not item.get("org_slug") or item.get("org_slug") == org]
+
+    if privileged:
+        privileged_catalog = _runtime_catalog(db, org, include_hidden=True, privileged=True)
+    else:
+        privileged_catalog = []
+
+    hidden_items = [
+        item for item in privileged_catalog
+        if isinstance(item, dict) and bool(item.get("hidden"))
+    ]
+    internal_items = [
+        item for item in privileged_catalog
+        if isinstance(item, dict) and bool(item.get("internal"))
+    ]
+    system_items = [
+        item for item in privileged_catalog
+        if isinstance(item, dict) and bool(item.get("system"))
+    ]
+    technical_items = [
+        item for item in privileged_catalog
+        if isinstance(item, dict) and _runtime_role_is_technical(item.get("role"))
+    ]
+    excluded_items = [
+        {
+            "name": str(item.get("name") or item.get("slug") or "n/d").strip(),
+            "role": str(item.get("role") or "n/d").strip().lower(),
+        }
+        for item in privileged_catalog
+        if isinstance(item, dict) and not _runtime_role_is_technical(item.get("role"))
+    ]
+
+    divergences: List[str] = []
+    if privileged:
+        public_slugs = {str(item.get("slug") or "").strip().lower() for item in public_catalog if isinstance(item, dict)}
+        privileged_slugs = {str(item.get("slug") or "").strip().lower() for item in privileged_catalog if isinstance(item, dict)}
+        seed_slugs = {str(item.get("slug") or "").strip().lower() for item in seed_items if isinstance(item, dict)}
+        hidden_slugs = {str(item.get("slug") or "").strip().lower() for item in hidden_items if isinstance(item, dict)}
+
+        missing_public = sorted(slug for slug in public_slugs if slug and slug not in privileged_slugs)
+        if missing_public:
+            divergences.append("public_missing_from_privileged=" + ",".join(missing_public))
+
+        missing_seed = sorted(slug for slug in seed_slugs if slug and slug not in hidden_slugs)
+        if missing_seed:
+            divergences.append("seed_missing_from_hidden=" + ",".join(missing_seed))
+
+        unexpected_hidden = sorted(slug for slug in hidden_slugs if slug and slug not in seed_slugs)
+        if unexpected_hidden:
+            divergences.append("hidden_not_in_seed=" + ",".join(unexpected_hidden))
+    else:
+        divergences.append("privileged_catalog_not_verified")
+
+    return {
+        "org_slug": org,
+        "privileged": privileged,
+        "seed_hidden_loaded": len(seed_items) > 0,
+        "public_catalog": public_catalog,
+        "privileged_catalog": privileged_catalog,
+        "hidden_items": hidden_items,
+        "internal_items": internal_items,
+        "system_items": system_items,
+        "technical_items": technical_items,
+        "excluded_items": excluded_items,
+        "seed_items": seed_items,
+        "divergences": divergences,
+    }
+
+def _build_runtime_source_audit_text(
+    db: Optional[Session] = None,
+    org: Optional[str] = None,
+    privileged: bool = False,
+) -> str:
+    snapshot = _runtime_source_audit_snapshot(db=db, org=org, privileged=privileged)
+
+    lines: List[str] = ["AUDITORIA DE FONTE DO RUNTIME", ""]
+
+    lines.append("CATÁLOGO PÚBLICO:")
+    lines.extend(_runtime_catalog_items_to_lines(snapshot.get("public_catalog") or []))
+    lines.append("")
+
+    lines.append("CATÁLOGO PRIVILEGIADO:")
+    if privileged:
+        lines.extend(_runtime_catalog_items_to_lines(snapshot.get("privileged_catalog") or []))
+    else:
+        lines.append("NÃO VERIFICADO")
+    lines.append("")
+
+    lines.append("AGENTES OCULTOS:")
+    if privileged:
+        lines.extend(_runtime_catalog_items_to_lines(snapshot.get("hidden_items") or []))
+    else:
+        lines.append("NÃO VERIFICADO")
+    lines.append("")
+
+    lines.append("AGENTES INTERNOS:")
+    if privileged:
+        lines.extend(_runtime_catalog_items_to_lines(snapshot.get("internal_items") or []))
+    else:
+        lines.append("NÃO VERIFICADO")
+    lines.append("")
+
+    lines.append("AGENTES SYSTEM:")
+    if privileged:
+        lines.extend(_runtime_catalog_items_to_lines(snapshot.get("system_items") or []))
+    else:
+        lines.append("NÃO VERIFICADO")
+    lines.append("")
+
+    lines.append("EQUIPE TÉCNICA REAL:")
+    if privileged:
+        lines.extend(_runtime_catalog_items_to_lines(snapshot.get("technical_items") or []))
+    else:
+        lines.append("NÃO VERIFICADO")
+    lines.append("")
+
+    lines.append("AGENTES EXCLUÍDOS:")
+    if privileged:
+        excluded = snapshot.get("excluded_items") or []
+        if excluded:
+            for item in excluded:
+                lines.append(f"- {item.get('name') or 'n/d'} - {item.get('role') or 'n/d'}")
+        else:
+            lines.append("- nenhum")
+    else:
+        lines.append("NÃO VERIFICADO")
+    lines.append("")
+
+    lines.append("DIVERGÊNCIAS ENTRE FONTES:")
+    divergences = snapshot.get("divergences") or []
+    if divergences:
+        for item in divergences:
+            lines.append(f"- {item}")
+    else:
+        lines.append("- nenhuma divergência detectada")
+    lines.append("")
+
+    lines.append("VEREDITO FINAL:")
+    lines.append(f"- {'inconsistente' if divergences else 'consistente'}")
+    lines.append(f"- seed oculto carregado: {'sim' if snapshot.get('seed_hidden_loaded') else 'não'}")
+    lines.append(f"- catálogo privilegiado operacional: {'sim' if privileged else 'não'}")
+    lines.append(f"- divergências encontradas: {'sim' if divergences else 'não'}")
+
+    return "\n".join(lines)
 
 def _build_capability_inventory_text(
     db: Optional[Session] = None,
@@ -5794,7 +5985,6 @@ def _build_capability_inventory_text(
 
     if include_hidden:
         if only_technical:
-            technical_roles = {"orchestrator", "cto", "architect", "engineer", "auditor", "devops", "specialist"}
             visible_technical = []
             excluded = []
             for item in catalog:
@@ -5802,25 +5992,21 @@ def _build_capability_inventory_text(
                     continue
                 role = str(item.get("role") or "").strip().lower()
                 name = str(item.get("name") or item.get("slug") or "n/d").strip()
-                if role in technical_roles:
+                if _runtime_role_is_technical(role):
                     visible_technical.append(item)
                 else:
                     excluded.append({"name": name, "role": role or "n/d"})
 
             lines = ["EQUIPE TÉCNICA REAL:"]
-            if visible_technical:
-                for idx, item in enumerate(visible_technical, start=1):
-                    lines.append(f"{idx}. {item.get('name') or item.get('slug')}")
-                    lines.append(f"   - id: {item.get('id') or 'n/d'}")
-                    lines.append(f"   - slug: {item.get('slug') or 'n/d'}")
-                    lines.append(f"   - role: {item.get('role') or 'n/d'}")
-                    lines.append(f"   - hidden: {bool(item.get('hidden'))}")
-                    lines.append(f"   - internal: {bool(item.get('internal'))}")
-                    lines.append(f"   - system: {bool(item.get('system'))}")
-                    lines.append(f"   - available_to_runtime: {bool(item.get('available_to_runtime', True))}")
-            else:
-                lines.append("- nenhuma equipe técnica foi retornada pelo catálogo privilegiado")
-
+            for idx, item in enumerate(visible_technical, start=1):
+                lines.append(f"{idx}. {item.get('name') or item.get('slug') or 'n/d'}")
+                lines.append(f"   - id: {item.get('id') or 'n/d'}")
+                lines.append(f"   - slug: {item.get('slug') or 'n/d'}")
+                lines.append(f"   - role: {item.get('role') or 'n/d'}")
+                lines.append(f"   - hidden: {bool(item.get('hidden'))}")
+                lines.append(f"   - internal: {bool(item.get('internal'))}")
+                lines.append(f"   - system: {bool(item.get('system'))}")
+                lines.append(f"   - available_to_runtime: {bool(item.get('available_to_runtime', True))}")
             lines.append("")
             lines.append("AGENTES EXCLUÍDOS:")
             if excluded:
@@ -5828,11 +6014,10 @@ def _build_capability_inventory_text(
                     lines.append(f"- {item['name']} - {item['role']}")
             else:
                 lines.append("- nenhum")
-
             lines.append("")
             lines.append("VEREDITO:")
             lines.append(f"- total técnico: {len(visible_technical)}")
-            lines.append(f"- auditor presente: {'sim' if any(str(x.get('role') or '').strip().lower() == 'auditor' for x in visible_technical) else 'não'}")
+            lines.append(f"- auditor presente: {'sim' if any(str(item.get('slug') or '') == 'auditor' for item in visible_technical) else 'não'}")
             lines.append("- catálogo usado: privilegiado")
             return "\n".join(lines)
 
@@ -5841,7 +6026,7 @@ def _build_capability_inventory_text(
                 return "NENHUM AGENTE OCULTO/INTERNO/SYSTEM FOI RETORNADO PELO CATÁLOGO PRIVILEGIADO."
             lines = ["AGENTES OCULTOS/INTERNOS DO RUNTIME:"]
             for idx, item in enumerate(hidden_items, start=1):
-                lines.append(f"{idx}. {item.get('name') or item.get('slug')}")
+                lines.append(f"{idx}. {item.get('name') or item.get('slug') or 'n/d'}")
                 lines.append(f"   - id: {item.get('id') or 'n/d'}")
                 lines.append(f"   - slug: {item.get('slug') or 'n/d'}")
                 lines.append(f"   - role: {item.get('role') or 'n/d'}")
@@ -5851,7 +6036,7 @@ def _build_capability_inventory_text(
                 lines.append(f"   - available_to_runtime: {bool(item.get('available_to_runtime', True))}")
             return "\n".join(lines)
 
-    lines = []
+    lines: List[str] = []
     if available_agents:
         lines.append("Multiagente operacional:")
         lines.append("- agentes disponíveis: " + ", ".join(available_agents))
@@ -5878,6 +6063,7 @@ def _build_capability_inventory_text(
         lines.append(f"- hidden_internal_system: {len(hidden_items)}")
 
     return "\n".join(lines)
+
 
 def _is_capability_inventory_request(user_text: str) -> bool:
     txt = (user_text or "").strip().lower()
@@ -8054,26 +8240,33 @@ def chat(
         should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
         if blocked_reply is None:
             try:
-                hidden_catalog_flags = _hidden_catalog_request_flags(inp.message)
-                if hidden_catalog_flags.get("requested"):
-                    capability_inventory_answer = _build_capability_inventory_text(
+                if _is_runtime_source_audit_request(inp.message):
+                    capability_inventory_answer = _build_runtime_source_audit_text(
                         db=db,
                         org=org,
-                        include_hidden=True,
                         privileged=_payload_has_catalog_privileged_access(user),
-                        only_hidden=bool(hidden_catalog_flags.get("only_hidden")),
-                        only_technical=bool(hidden_catalog_flags.get("only_technical")),
                     )
-                elif _is_github_access_request(inp.message):
-                    capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
-                elif _is_capability_inventory_request(inp.message):
-                    capability_inventory_answer = _build_capability_inventory_text(db=db, org=org)
-                elif should_execute_runtime:
-                    execution_result = _execute_capability_if_authorized(
-                    inp.message,
-                    trace_id=getattr(inp, "trace_id", None),
-                    runtime_enrichment=runtime_enrichment,
-                )
+                else:
+                    hidden_catalog_flags = _hidden_catalog_request_flags(inp.message)
+                    if hidden_catalog_flags.get("requested"):
+                        capability_inventory_answer = _build_capability_inventory_text(
+                            db=db,
+                            org=org,
+                            include_hidden=True,
+                            privileged=_payload_has_catalog_privileged_access(user),
+                            only_hidden=bool(hidden_catalog_flags.get("only_hidden")),
+                            only_technical=bool(hidden_catalog_flags.get("only_technical")),
+                        )
+                    elif _is_github_access_request(inp.message):
+                        capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
+                    elif _is_capability_inventory_request(inp.message):
+                        capability_inventory_answer = _build_capability_inventory_text(db=db, org=org)
+                    elif should_execute_runtime:
+                        execution_result = _execute_capability_if_authorized(
+                        inp.message,
+                        trace_id=getattr(inp, "trace_id", None),
+                        runtime_enrichment=runtime_enrichment,
+                    )
             except Exception:
                 execution_result = {
                     "handled": True,
@@ -10769,6 +10962,16 @@ def admin_hidden_bootstrap_status(_admin=Depends(require_admin_access), x_org_sl
     }
 
 
+@app.get("/api/agents/runtime-source-audit")
+def get_runtime_source_audit(x_org_slug: Optional[str] = Header(default=None), user=Depends(get_current_user), db: Session = Depends(get_db)):
+    org = get_request_org(user, x_org_slug)
+    ensure_core_agents(db, org)
+    privileged = _payload_has_catalog_privileged_access(user)
+    if not privileged:
+        raise HTTPException(status_code=403, detail="Privileged catalog required")
+    return _runtime_source_audit_snapshot(db=db, org=org, privileged=True)
+
+
 
 @app.get("/api/admin/agents/{agent_id}/links")
 def admin_get_agent_links(agent_id: str, _admin=Depends(require_admin_access), x_org_slug: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
@@ -11603,26 +11806,33 @@ async def chat_stream(
                 should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
                 if blocked_reply is None:
                     try:
-                        hidden_catalog_flags = _hidden_catalog_request_flags(message)
-                        if hidden_catalog_flags.get("requested"):
-                            capability_inventory_answer = _build_capability_inventory_text(
+                        if _is_runtime_source_audit_request(message):
+                            capability_inventory_answer = _build_runtime_source_audit_text(
                                 db=db,
                                 org=org,
-                                include_hidden=True,
                                 privileged=_payload_has_catalog_privileged_access(user),
-                                only_hidden=bool(hidden_catalog_flags.get("only_hidden")),
-                                only_technical=bool(hidden_catalog_flags.get("only_technical")),
                             )
-                        elif _is_github_access_request(message):
-                            capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
-                        elif _is_capability_inventory_request(message):
-                            capability_inventory_answer = _build_capability_inventory_text(db=db, org=org)
-                        elif should_execute_runtime:
-                            execution_result = _execute_capability_if_authorized(
-                            message,
-                            trace_id=trace_id,
-                            runtime_enrichment=runtime_enrichment,
-                        )
+                        else:
+                            hidden_catalog_flags = _hidden_catalog_request_flags(message)
+                            if hidden_catalog_flags.get("requested"):
+                                capability_inventory_answer = _build_capability_inventory_text(
+                                    db=db,
+                                    org=org,
+                                    include_hidden=True,
+                                    privileged=_payload_has_catalog_privileged_access(user),
+                                    only_hidden=bool(hidden_catalog_flags.get("only_hidden")),
+                                    only_technical=bool(hidden_catalog_flags.get("only_technical")),
+                                )
+                            elif _is_github_access_request(message):
+                                capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
+                            elif _is_capability_inventory_request(message):
+                                capability_inventory_answer = _build_capability_inventory_text(db=db, org=org)
+                            elif should_execute_runtime:
+                                execution_result = _execute_capability_if_authorized(
+                                message,
+                                trace_id=trace_id,
+                                runtime_enrichment=runtime_enrichment,
+                            )
                     except Exception:
                         execution_result = {
                             "handled": True,
