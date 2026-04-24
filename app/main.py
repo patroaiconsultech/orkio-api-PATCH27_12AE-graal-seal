@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 from app.self_heal.secret_broker import resolve_github_token
 from app.self_heal.credential_scope import control_plane_github_context
 
-from fastapi import FastAPI, Depends, HTTPException, Header, UploadFile, File as UpFile, Request, Form, BackgroundTasks, Query
+from fastapi import FastAPI, Depends, HTTPException, Header, UploadFile, File as UpFile, Request, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
@@ -5417,7 +5417,6 @@ def _github_token_value() -> str:
 
 
 
-
 def _canonical_runtime_agent_slug(name: Any) -> Optional[str]:
     raw = str(name or "").strip().lower()
     if not raw:
@@ -5433,105 +5432,163 @@ def _canonical_runtime_agent_slug(name: Any) -> Optional[str]:
     return None
 
 
-def _slugify_runtime_agent(name: Any) -> Optional[str]:
-    raw = str(name or "").strip().lower()
-    if not raw:
-        return None
-    canonical = _canonical_runtime_agent_slug(raw)
-    if canonical:
-        return canonical
-    slug = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
-    return slug or None
 
 
-def _is_public_runtime_slug(slug: str) -> bool:
-    return str(slug or "").strip().lower() in {"orkio", "orion", "chris", "auditor"}
-
-
-def _truthy_attr(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
+def _payload_has_catalog_privileged_access(payload: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(payload, dict):
         return False
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    role = str(payload.get("role") or "").strip().lower()
+    if role in {"admin", "owner", "superadmin"}:
+        return True
+    if bool(payload.get("is_admin")) or bool(payload.get("admin")):
+        return True
+    return False
 
 
-def _runtime_agent_flags(row: Any, slug: str) -> Dict[str, bool]:
-    hidden = any(
-        _truthy_attr(getattr(row, attr, None))
-        for attr in ("hidden", "is_hidden", "private", "is_private")
-    )
-    internal = any(
-        _truthy_attr(getattr(row, attr, None))
-        for attr in ("internal", "is_internal")
-    )
-    system = any(
-        _truthy_attr(getattr(row, attr, None))
-        for attr in ("system", "is_system")
-    )
-    if not hidden and not internal and not system and not _is_public_runtime_slug(slug):
-        hidden = True
-    return {
-        "hidden": hidden,
-        "internal": internal,
-        "system": system,
-    }
+def _safe_bool(v: Any, default: bool = False) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return default
+    return str(v).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _runtime_agent_role_for_slug(slug: str) -> str:
-    normalized = str(slug or "").strip().lower()
-    mapping = {
-        "orkio": "orchestrator",
-        "orion": "cto",
-        "chris": "cfo",
-        "auditor": "technical_auditor",
-    }
-    return mapping.get(normalized, "specialist")
+def _hidden_agents_seed_path() -> str:
+    raw = _clean_env(os.getenv("ORKIO_HIDDEN_AGENTS_FILE", ""), default="")
+    if raw:
+        return raw
+    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "hidden_agents.seed.json")
 
 
-def _runtime_agent_role_for_row(row: Any, slug: str) -> str:
-    explicit = str(getattr(row, "role", "") or "").strip().lower()
-    if explicit:
-        return explicit
-    return _runtime_agent_role_for_slug(slug)
-
-
-def _runtime_agent_available_for_runtime(row: Any) -> bool:
-    for attr in ("available_in_runtime", "available_to_runtime", "enabled", "is_enabled", "active", "is_active"):
-        value = getattr(row, attr, None)
-        if value is None:
-            continue
-        return _truthy_attr(value)
-    return True
-
-
-def _user_can_view_hidden_runtime_catalog(user: Any) -> bool:
-    if not isinstance(user, dict):
-        return False
-    role = str(user.get("role", "") or "").strip().lower()
-    return role in {"admin", "owner", "superadmin"}
-
-
-def _runtime_available_agents(db: Optional[Session] = None, org: Optional[str] = None, include_hidden: bool = False) -> List[str]:
-    discovered: List[str] = []
-    if db is not None and org:
+def _load_hidden_agent_seed() -> List[Dict[str, Any]]:
+    raw_env = _clean_env(os.getenv("ORKIO_HIDDEN_AGENTS_JSON", ""), default="")
+    parsed: Any = None
+    if raw_env:
         try:
-            ensure_core_agents(db, org)
-            rows = db.execute(select(Agent).where(Agent.org_slug == org).order_by(Agent.created_at.asc())).scalars().all()
-            for row in rows:
-                slug = _slugify_runtime_agent(getattr(row, "name", None))
-                if not slug:
-                    continue
-                flags = _runtime_agent_flags(row, slug)
-                if not include_hidden and flags.get("hidden"):
-                    continue
-                if slug not in discovered:
-                    discovered.append(slug)
+            parsed = json.loads(raw_env)
         except Exception:
+            parsed = None
+    if parsed is None:
+        p = _hidden_agents_seed_path()
+        if os.path.exists(p):
             try:
-                db.rollback()
+                with open(p, "r", encoding="utf-8") as fh:
+                    parsed = json.load(fh)
             except Exception:
-                pass
+                parsed = None
+    items = parsed if isinstance(parsed, list) else []
+    normalized: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        slug = _clean_env(item.get("slug") or item.get("name") or "", default="").lower().replace(" ", "_")
+        if not slug or slug in seen:
+            continue
+        seen.add(slug)
+        name = _clean_env(item.get("name") or slug.title(), default=slug.title())
+        role = _clean_env(item.get("role") or "specialist", default="specialist").lower()
+        normalized.append({
+            "id": _clean_env(item.get("id") or f"hidden::{slug}", default=f"hidden::{slug}"),
+            "slug": slug,
+            "name": name,
+            "role": role,
+            "model": _clean_env(item.get("model") or os.getenv("DEFAULT_CHAT_MODEL", "gpt-4o-mini"), default="gpt-4o-mini"),
+            "voice_id": _clean_env(item.get("voice_id") or "echo", default="echo"),
+            "default": _safe_bool(item.get("default"), False),
+            "hidden": _safe_bool(item.get("hidden"), True),
+            "internal": _safe_bool(item.get("internal"), True),
+            "system": _safe_bool(item.get("system"), False),
+            "available_to_runtime": _safe_bool(item.get("available_to_runtime"), True),
+            "org_slug": _clean_env(item.get("org_slug") or "", default=""),
+            "description": _clean_env(item.get("description") or "", default=""),
+        })
+    return normalized
+
+
+def _infer_agent_role(row: Agent) -> str:
+    slug = _canonical_runtime_agent_slug(getattr(row, "name", None))
+    if slug == "orkio":
+        return "orchestrator"
+    if slug == "orion":
+        return "cto"
+    if slug == "chris":
+        return "cfo"
+    if slug == "auditor":
+        return "auditor"
+    desc = (getattr(row, "description", None) or "").strip().lower()
+    if "devops" in desc:
+        return "devops"
+    if "architect" in desc or "arquitet" in desc:
+        return "architect"
+    if "engineer" in desc or "engenheir" in desc:
+        return "engineer"
+    return "specialist"
+
+
+def _db_runtime_catalog(db: Optional[Session], org: Optional[str]) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    if db is None or not org:
+        return items
+    try:
+        ensure_core_agents(db, org)
+        rows = db.execute(select(Agent).where(Agent.org_slug == org).order_by(Agent.created_at.asc())).scalars().all()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return items
+    for row in rows:
+        slug = _canonical_runtime_agent_slug(getattr(row, "name", None))
+        if not slug:
+            continue
+        items.append({
+            "id": getattr(row, "id", None),
+            "slug": slug,
+            "name": getattr(row, "name", None) or slug.title(),
+            "role": _infer_agent_role(row),
+            "model": getattr(row, "model", None) or os.getenv("DEFAULT_CHAT_MODEL", "gpt-4o-mini"),
+            "voice_id": resolve_agent_voice(row),
+            "default": bool(getattr(row, "is_default", False)),
+            "hidden": False,
+            "internal": False,
+            "system": False,
+            "available_to_runtime": True,
+            "org_slug": getattr(row, "org_slug", None) or org,
+            "description": getattr(row, "description", None) or "",
+        })
+    return items
+
+
+def _privileged_runtime_catalog(db: Optional[Session], org: Optional[str], include_hidden: bool = False) -> List[Dict[str, Any]]:
+    items = _db_runtime_catalog(db, org)
+    if not include_hidden:
+        return items
+    seen = {str(item.get("slug") or "").strip().lower() for item in items}
+    for entry in _load_hidden_agent_seed():
+        scope = str(entry.get("org_slug") or "").strip()
+        if scope and org and scope != org:
+            continue
+        slug = str(entry.get("slug") or "").strip().lower()
+        if not slug or slug in seen:
+            continue
+        seen.add(slug)
+        items.append(entry)
+    return items
+
+
+def _runtime_catalog(db: Optional[Session], org: Optional[str], *, include_hidden: bool = False, privileged: bool = False) -> List[Dict[str, Any]]:
+    return _privileged_runtime_catalog(db, org, include_hidden=include_hidden) if privileged else _db_runtime_catalog(db, org)
+
+
+
+def _runtime_available_agents(db: Optional[Session] = None, org: Optional[str] = None, include_hidden: bool = False, privileged: bool = False) -> List[str]:
+    discovered: List[str] = []
+    for item in _runtime_catalog(db, org, include_hidden=include_hidden, privileged=privileged):
+        slug = _canonical_runtime_agent_slug(item.get("slug") or item.get("name"))
+        if slug and slug not in discovered and bool(item.get("available_to_runtime", True)):
+            discovered.append(slug)
     if not discovered:
         discovered = ["orkio", "orion", "chris"]
     ordered = [slug for slug in ["orkio", "orion", "chris", "auditor"] if slug in discovered]
@@ -5541,182 +5598,10 @@ def _runtime_available_agents(db: Optional[Session] = None, org: Optional[str] =
     return ordered
 
 
-def _runtime_agent_catalog(db: Optional[Session] = None, org: Optional[str] = None, include_hidden: bool = False) -> List[Dict[str, Any]]:
-    catalog: List[Dict[str, Any]] = []
-    if db is not None and org:
-        try:
-            ensure_core_agents(db, org)
-            rows = db.execute(
-                select(Agent).where(Agent.org_slug == org).order_by(Agent.created_at.asc())
-            ).scalars().all()
-            seen_slugs: set[str] = set()
-            for row in rows:
-                slug = _slugify_runtime_agent(getattr(row, "name", None))
-                if not slug or slug in seen_slugs:
-                    continue
-                flags = _runtime_agent_flags(row, slug)
-                if not include_hidden and flags.get("hidden"):
-                    continue
-                seen_slugs.add(slug)
-                catalog.append({
-                    "id": str(getattr(row, "id", "") or slug),
-                    "slug": slug,
-                    "name": str(getattr(row, "name", "") or slug.title()),
-                    "role": _runtime_agent_role_for_row(row, slug),
-                    "description": str(getattr(row, "description", "") or "").strip(),
-                    "model": str(getattr(row, "model", "") or "").strip() or None,
-                    "voice_id": resolve_agent_voice(row),
-                    "avatar_url": getattr(row, "avatar_url", None),
-                    "is_default": bool(getattr(row, "is_default", False)),
-                    "available_in_runtime": _runtime_agent_available_for_runtime(row),
-                    "available_to_runtime": _runtime_agent_available_for_runtime(row),
-                    "hidden": bool(flags.get("hidden")),
-                    "internal": bool(flags.get("internal")),
-                    "system": bool(flags.get("system")),
-                    "source": "db",
-                })
-        except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
-    if catalog:
-        return catalog
 
-    fallback_names = {
-        "orkio": "Orkio",
-        "orion": "Orion",
-        "chris": "Chris",
-        "auditor": "Auditor",
-    }
-    for slug in _runtime_available_agents(db=db, org=org, include_hidden=include_hidden):
-        is_hidden = not _is_public_runtime_slug(slug)
-        if not include_hidden and is_hidden:
-            continue
-        catalog.append({
-            "id": slug,
-            "slug": slug,
-            "name": fallback_names.get(slug, slug.title()),
-            "role": _runtime_agent_role_for_slug(slug),
-            "description": "",
-            "model": None,
-            "voice_id": None,
-            "avatar_url": None,
-            "is_default": slug == "orkio",
-            "available_in_runtime": True,
-            "available_to_runtime": True,
-            "hidden": is_hidden,
-            "internal": is_hidden,
-            "system": False,
-            "source": "fallback",
-        })
-    return catalog
-
-
-
-def _runtime_agent_source_scope(org_slug: Optional[str]) -> str:
-    value = str(org_slug or "").strip()
-    if not value:
-        return "global"
-    lowered = value.lower()
-    if lowered in {"global", "system", "root", "*"}:
-        return "global"
-    return "org"
-
-
-def _runtime_agent_catalog_audit_entry(row: Any) -> Dict[str, Any]:
-    slug = _slugify_runtime_agent(getattr(row, "name", None))
-    flags = _runtime_agent_flags(row, slug)
-    org_slug = str(getattr(row, "org_slug", "") or "").strip()
-    return {
-        "id": str(getattr(row, "id", "") or slug or "unknown"),
-        "slug": slug or "unknown",
-        "name": str(getattr(row, "name", "") or slug or "unknown").strip(),
-        "role": _runtime_agent_role_for_row(row, slug or "unknown"),
-        "org_slug": org_slug or None,
-        "scope": _runtime_agent_source_scope(org_slug),
-        "model": str(getattr(row, "model", "") or "").strip() or None,
-        "voice_id": resolve_agent_voice(row),
-        "hidden": bool(flags.get("hidden")),
-        "internal": bool(flags.get("internal")),
-        "system": bool(flags.get("system")),
-        "available_to_runtime": _runtime_agent_available_for_runtime(row),
-        "is_default": bool(getattr(row, "is_default", False)),
-    }
-
-
-def _runtime_agent_source_audit(db: Optional[Session] = None, org: Optional[str] = None) -> Dict[str, Any]:
-    rows: List[Any] = []
-    if db is not None:
-        try:
-            rows = db.execute(select(Agent).order_by(Agent.created_at.asc())).scalars().all()
-        except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            rows = []
-
-    entries = [_runtime_agent_catalog_audit_entry(row) for row in rows]
-    current_org = str(org or "").strip()
-    same_org = [item for item in entries if str(item.get("org_slug") or "").strip() == current_org]
-    global_scope = [item for item in entries if item.get("scope") == "global"]
-    other_org = [
-        item for item in entries
-        if str(item.get("org_slug") or "").strip()
-        and str(item.get("org_slug") or "").strip() != current_org
-        and item.get("scope") != "global"
-    ]
-    flagged_same_org = [item for item in same_org if item.get("hidden") or item.get("internal") or item.get("system")]
-    flagged_global = [item for item in global_scope if item.get("hidden") or item.get("internal") or item.get("system")]
-    flagged_other_org = [item for item in other_org if item.get("hidden") or item.get("internal") or item.get("system")]
-
-    privileged_catalog = _runtime_agent_catalog(db=db, org=org, include_hidden=True)
-    public_catalog = _runtime_agent_catalog(db=db, org=org, include_hidden=False)
-
-    return {
-        "ok": True,
-        "org": current_org or None,
-        "counts": {
-            "db_total": len(entries),
-            "public_runtime_count": len(public_catalog),
-            "privileged_runtime_count": len(privileged_catalog),
-            "current_org_total": len(same_org),
-            "current_org_hidden": sum(1 for item in same_org if item.get("hidden")),
-            "current_org_internal": sum(1 for item in same_org if item.get("internal")),
-            "current_org_system": sum(1 for item in same_org if item.get("system")),
-            "global_scope_total": len(global_scope),
-            "global_scope_hidden": sum(1 for item in global_scope if item.get("hidden")),
-            "global_scope_internal": sum(1 for item in global_scope if item.get("internal")),
-            "global_scope_system": sum(1 for item in global_scope if item.get("system")),
-            "other_org_total": len(other_org),
-            "other_org_hidden": sum(1 for item in other_org if item.get("hidden")),
-            "other_org_internal": sum(1 for item in other_org if item.get("internal")),
-            "other_org_system": sum(1 for item in other_org if item.get("system")),
-            "excluded_by_scope_total": len(flagged_global) + len(flagged_other_org),
-        },
-        "same_org_agents": same_org,
-        "flagged_same_org_agents": flagged_same_org,
-        "global_scope_agents": global_scope,
-        "flagged_global_agents": flagged_global,
-        "other_org_agents": other_org,
-        "flagged_other_org_agents": flagged_other_org,
-        "excluded_by_scope_agents": flagged_global + flagged_other_org,
-    }
-
-
-def _build_runtime_capabilities_payload(
-    db: Optional[Session] = None,
-    org: Optional[str] = None,
-    include_hidden: bool = False,
-    user_can_view_hidden: bool = False,
-) -> Dict[str, Any]:
-    public_catalog = _runtime_agent_catalog(db, org, include_hidden=False)
-    privileged_catalog = _runtime_agent_catalog(db, org, include_hidden=True) if user_can_view_hidden else []
-    active_catalog = privileged_catalog if (include_hidden and user_can_view_hidden) else public_catalog
-    available_agents = [str(item.get("slug") or "").strip() for item in active_catalog if str(item.get("slug") or "").strip()]
-    if not available_agents:
-        available_agents = _runtime_available_agents(db, org, include_hidden=bool(include_hidden and user_can_view_hidden))
+def _build_runtime_capabilities_payload(db: Optional[Session] = None, org: Optional[str] = None, include_hidden: bool = False, privileged: bool = False) -> Dict[str, Any]:
+    catalog = _runtime_catalog(db, org, include_hidden=include_hidden, privileged=privileged)
+    available_agents = [str(item.get("slug") or "").strip() for item in catalog if item.get("available_to_runtime", True)]
     github_ctx = control_plane_github_context(repo=_clean_env(os.getenv("GITHUB_REPO", "")) or None)
     github_repo = _clean_env(os.getenv("GITHUB_REPO", ""))
     github_repo_web = _clean_env(os.getenv("GITHUB_REPO_WEB", ""))
@@ -5750,8 +5635,6 @@ def _build_runtime_capabilities_payload(
             "github_repo_audit",
             "github_pr_prepare",
         ])
-    if user_can_view_hidden:
-        available_ops.append("agent_catalog_privileged")
 
     payload: Dict[str, Any] = {
         "available": available_ops,
@@ -5759,14 +5642,9 @@ def _build_runtime_capabilities_payload(
             "enabled": len(available_agents) > 0,
             "available_agents": available_agents,
             "handoff_enabled": len(available_agents) > 1,
-            "catalog_available": len(active_catalog) > 0,
-            "agent_catalog": active_catalog,
-            "agent_catalog_public": public_catalog,
-            "agent_catalog_privileged": privileged_catalog if (include_hidden and user_can_view_hidden) else [],
-            "agent_catalog_privileged_available": bool(user_can_view_hidden),
-            "privileged_mode": bool(include_hidden and user_can_view_hidden),
-            "hidden_agents_count": len([item for item in privileged_catalog if bool(item.get("hidden"))]) if user_can_view_hidden else 0,
         },
+        "agent_catalog": catalog,
+        "agent_catalog_source": "privileged" if privileged and include_hidden else "public",
         "github": {
             "available": github_available,
             "read_enabled": github_available,
@@ -5845,7 +5723,6 @@ def _build_capability_inventory_text(db: Optional[Session] = None, org: Optional
     multiagent = reg.get("multiagent") if isinstance(reg.get("multiagent"), dict) else {}
     github = reg.get("github") if isinstance(reg.get("github"), dict) else {}
     available_agents = list(multiagent.get("available_agents") or [])
-    agent_catalog = list(multiagent.get("agent_catalog") or [])
     targets = github.get("repository_targets") if isinstance(github.get("repository_targets"), dict) else {}
     backend_repo = str(targets.get("backend") or "").strip()
     frontend_repo = str(targets.get("frontend") or "").strip()
@@ -5855,13 +5732,6 @@ def _build_capability_inventory_text(db: Optional[Session] = None, org: Optional
         lines.append("Multiagente operacional:")
         lines.append("- agentes disponíveis: " + ", ".join(available_agents))
         lines.append(f"- handoff habilitado: {bool(multiagent.get('handoff_enabled'))}")
-        if agent_catalog:
-            lines.append("- catálogo operacional:")
-            for item in agent_catalog:
-                slug = str(item.get("slug") or "").strip()
-                role = str(item.get("role") or "").strip() or "specialist"
-                name = str(item.get("name") or slug or "agente").strip()
-                lines.append(f"  - {slug or name}: {name} | role={role}")
     else:
         lines.append("Multiagente ainda não confirmado em runtime.")
     lines.append("")
@@ -5877,222 +5747,6 @@ def _build_capability_inventory_text(db: Optional[Session] = None, org: Optional
         lines.append("GitHub operacional:")
         lines.append("- indisponível neste ambiente")
     return "\n".join(lines)
-
-
-def _wants_hidden_agent_catalog(user_text: str) -> bool:
-    txt = (user_text or "").strip().lower()
-    if not txt:
-        return False
-    patterns = [
-        r"agentes ocult",
-        r"hidden agents?",
-        r"cat[aá]logo privilegiado",
-        r"cat[aá]logo completo",
-        r"agentes internos",
-        r"agentes escondidos",
-        r"todos os agentes",
-        r"equipe t[eé]cnica real",
-        r"agentes reais",
-    ]
-    return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
-
-
-def _wants_technical_team_only(user_text: str) -> bool:
-    txt = (user_text or "").strip().lower()
-    if not txt:
-        return False
-    patterns = [
-        r"equipe t[eé]cnica",
-        r"time t[eé]cnico",
-        r"technical team",
-        r"apenas agentes t[eé]cnicos",
-        r"somente agentes t[eé]cnicos",
-    ]
-    return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
-
-
-def _wants_hidden_source_audit(user_text: str) -> bool:
-    txt = (user_text or "").strip().lower()
-    if not txt:
-        return False
-    patterns = [
-        r"auditoria de fonte",
-        r"source audit",
-        r"agentes fora do escopo",
-        r"fora do escopo",
-        r"por org",
-        r"por organiza[cç][aã]o",
-        r"quais agentes ficaram fora",
-        r"agent source audit",
-        r"hidden agent source",
-        r"cat[aá]logo privilegiado.*totais",
-        r"total com hidden=true",
-        r"total com internal=true",
-        r"total com system=true",
-    ]
-    return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
-
-
-def _build_runtime_agent_catalog_text(
-    db: Optional[Session] = None,
-    org: Optional[str] = None,
-    include_hidden: bool = False,
-    privileged: bool = False,
-    technical_only: bool = False,
-) -> str:
-    if include_hidden and not privileged:
-        return "NÃO TENHO ACESSO AO CATÁLOGO PRIVILEGIADO."
-    reg = _build_runtime_capabilities_payload(
-        db=db,
-        org=org,
-        include_hidden=include_hidden,
-        user_can_view_hidden=privileged,
-    )
-    multiagent = reg.get("multiagent") if isinstance(reg.get("multiagent"), dict) else {}
-    catalog = list(multiagent.get("agent_catalog") or [])
-    if technical_only:
-        technical_roles = {
-            "orchestrator",
-            "cto",
-            "engineer",
-            "systems_architect",
-            "architect",
-            "devops",
-            "technical_auditor",
-            "auditor",
-            "developer",
-            "specialist",
-        }
-        catalog = [item for item in catalog if str(item.get("role") or "").strip().lower() in technical_roles]
-    if not catalog:
-        return "NÃO TENHO ACESSO AO CATÁLOGO."
-    title = "CATÁLOGO PRIVILEGIADO DE AGENTES:" if include_hidden else "CATÁLOGO DE AGENTES DO RUNTIME:"
-    if technical_only:
-        title = "EQUIPE TÉCNICA DO RUNTIME:"
-    lines = [title]
-    excluded: List[str] = []
-    for item in catalog:
-        slug = str(item.get("slug") or "").strip()
-        name = str(item.get("name") or slug or "agente").strip()
-        role = str(item.get("role") or "").strip() or "specialist"
-        agent_id = str(item.get("id") or slug).strip()
-        model = str(item.get("model") or "").strip()
-        voice_id = str(item.get("voice_id") or "").strip()
-        is_default = bool(item.get("is_default"))
-        hidden = bool(item.get("hidden"))
-        internal = bool(item.get("internal"))
-        system = bool(item.get("system"))
-        lines.append(f"- id: {agent_id}")
-        lines.append(f"  slug: {slug or 'n/d'}")
-        lines.append(f"  name: {name}")
-        lines.append(f"  role: {role}")
-        if model:
-            lines.append(f"  model: {model}")
-        if voice_id:
-            lines.append(f"  voice_id: {voice_id}")
-        lines.append(f"  default: {is_default}")
-        if include_hidden:
-            lines.append(f"  hidden: {hidden}")
-            lines.append(f"  internal: {internal}")
-            lines.append(f"  system: {system}")
-    if technical_only:
-        public_catalog = list((multiagent.get("agent_catalog") or []))
-        for item in public_catalog:
-            role = str(item.get("role") or "").strip().lower()
-            if role and role not in {"orchestrator","cto","engineer","systems_architect","architect","devops","technical_auditor","auditor","developer","specialist"}:
-                excluded.append(f"{str(item.get('name') or item.get('slug') or 'agente')} ({role})")
-        if excluded:
-            lines.append("AGENTES EXCLUÍDOS:")
-            for item in excluded:
-                lines.append(f"- {item}")
-    return "\n".join(lines)
-
-
-
-def _build_runtime_agent_source_audit_text(
-    db: Optional[Session] = None,
-    org: Optional[str] = None,
-    privileged: bool = False,
-) -> str:
-    if not privileged:
-        return "NÃO TENHO ACESSO À AUDITORIA DE FONTE DO CATÁLOGO."
-    audit = _runtime_agent_source_audit(db=db, org=org)
-    counts = audit.get("counts") if isinstance(audit.get("counts"), dict) else {}
-    same_org_flagged = list(audit.get("flagged_same_org_agents") or [])
-    excluded = list(audit.get("excluded_by_scope_agents") or [])
-    global_flagged = list(audit.get("flagged_global_agents") or [])
-    other_org_flagged = list(audit.get("flagged_other_org_agents") or [])
-
-    lines = ["AUDITORIA DE FONTE DO CATÁLOGO:"]
-    lines.append(f"- org_atual: {str(audit.get('org') or 'n/d')}")
-    lines.append(f"- db_total: {int(counts.get('db_total') or 0)}")
-    lines.append(f"- public_runtime_count: {int(counts.get('public_runtime_count') or 0)}")
-    lines.append(f"- privileged_runtime_count: {int(counts.get('privileged_runtime_count') or 0)}")
-    lines.append(f"- current_org_total: {int(counts.get('current_org_total') or 0)}")
-    lines.append(f"- current_org_hidden: {int(counts.get('current_org_hidden') or 0)}")
-    lines.append(f"- current_org_internal: {int(counts.get('current_org_internal') or 0)}")
-    lines.append(f"- current_org_system: {int(counts.get('current_org_system') or 0)}")
-    lines.append(f"- global_scope_total: {int(counts.get('global_scope_total') or 0)}")
-    lines.append(f"- global_scope_hidden: {int(counts.get('global_scope_hidden') or 0)}")
-    lines.append(f"- global_scope_internal: {int(counts.get('global_scope_internal') or 0)}")
-    lines.append(f"- global_scope_system: {int(counts.get('global_scope_system') or 0)}")
-    lines.append(f"- other_org_total: {int(counts.get('other_org_total') or 0)}")
-    lines.append(f"- other_org_hidden: {int(counts.get('other_org_hidden') or 0)}")
-    lines.append(f"- other_org_internal: {int(counts.get('other_org_internal') or 0)}")
-    lines.append(f"- other_org_system: {int(counts.get('other_org_system') or 0)}")
-    lines.append(f"- excluded_by_scope_total: {int(counts.get('excluded_by_scope_total') or 0)}")
-
-    if same_org_flagged:
-        lines.append("FLAGGED NO ORG ATUAL:")
-        for item in same_org_flagged[:25]:
-            lines.append(
-                f"- {str(item.get('name') or item.get('slug') or 'agente')} | slug={str(item.get('slug') or 'n/d')} | role={str(item.get('role') or 'n/d')} | hidden={bool(item.get('hidden'))} | internal={bool(item.get('internal'))} | system={bool(item.get('system'))}"
-            )
-    else:
-        lines.append("FLAGGED NO ORG ATUAL: nenhum")
-
-    if global_flagged:
-        lines.append("FLAGGED EM ESCOPO GLOBAL/SYSTEM:")
-        for item in global_flagged[:25]:
-            lines.append(
-                f"- {str(item.get('name') or item.get('slug') or 'agente')} | slug={str(item.get('slug') or 'n/d')} | org={str(item.get('org_slug') or 'global')} | role={str(item.get('role') or 'n/d')} | hidden={bool(item.get('hidden'))} | internal={bool(item.get('internal'))} | system={bool(item.get('system'))}"
-            )
-    else:
-        lines.append("FLAGGED EM ESCOPO GLOBAL/SYSTEM: nenhum")
-
-    if other_org_flagged:
-        lines.append("FLAGGED EM OUTRAS ORGS:")
-        for item in other_org_flagged[:25]:
-            lines.append(
-                f"- {str(item.get('name') or item.get('slug') or 'agente')} | slug={str(item.get('slug') or 'n/d')} | org={str(item.get('org_slug') or 'n/d')} | role={str(item.get('role') or 'n/d')} | hidden={bool(item.get('hidden'))} | internal={bool(item.get('internal'))} | system={bool(item.get('system'))}"
-            )
-    else:
-        lines.append("FLAGGED EM OUTRAS ORGS: nenhum")
-
-    if not excluded:
-        lines.append("VEREDITO: nenhum agente oculto/interno/system fora do escopo atual foi encontrado na fonte consultada.")
-    else:
-        lines.append("VEREDITO: existem agentes potencialmente fora do escopo atual; revisar org_slug/flags/query do runtime.")
-    return "\n".join(lines)
-
-def _is_agent_catalog_request(user_text: str) -> bool:
-    txt = (user_text or "").strip().lower()
-    if not txt:
-        return False
-    patterns = [
-        r"cat[aá]logo de agentes",
-        r"catalogo de agentes",
-        r"quais agentes .*runtime",
-        r"agentes .*acess[íi]veis .*runtime",
-        r"lista .*agentes .*runtime",
-        r"runtime .*agentes",
-        r"fonte operacional .*agentes",
-        r"cat[aá]logo .*runtime",
-        r"agentes ocult",
-        r"equipe t[eé]cnica",
-        r"time t[eé]cnico",
-    ]
-    return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
 
 def _is_capability_inventory_request(user_text: str) -> bool:
     txt = (user_text or "").strip().lower()
@@ -8269,10 +7923,13 @@ def chat(
         should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
         if blocked_reply is None:
             try:
-                if _wants_hidden_source_audit(inp.message):
-                    capability_inventory_answer = _build_runtime_agent_source_audit_text(db=db, org=org, privileged=_user_can_view_hidden_runtime_catalog(user))
-                elif _is_agent_catalog_request(inp.message):
-                    capability_inventory_answer = _build_runtime_agent_catalog_text(db=db, org=org, include_hidden=_wants_hidden_agent_catalog(inp.message), privileged=_user_can_view_hidden_runtime_catalog(user), technical_only=_wants_technical_team_only(inp.message))
+                if _is_hidden_catalog_request(inp.message):
+                    capability_inventory_answer = _build_capability_inventory_text(
+                        db=db,
+                        org=org,
+                        include_hidden=True,
+                        privileged=_payload_has_catalog_privileged_access(user),
+                    )
                 elif _is_github_access_request(inp.message):
                     capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
                 elif _is_capability_inventory_request(inp.message):
@@ -10940,57 +10597,42 @@ def list_agents(x_org_slug: Optional[str] = Header(default=None), user=Depends(g
     return [{"id": a.id, "name": a.name, "description": a.description, "rag_enabled": a.rag_enabled, "rag_top_k": a.rag_top_k, "model": a.model, "temperature": a.temperature, "is_default": a.is_default, "voice_id": resolve_agent_voice(a), "avatar_url": getattr(a, 'avatar_url', None), "updated_at": a.updated_at} for a in rows]
 
 
-@app.get("/api/agents/capabilities")
-def get_agent_capabilities(
-    include_hidden: bool = Query(default=False),
-    x_org_slug: Optional[str] = Header(default=None),
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    org = get_request_org(user, x_org_slug)
-    ensure_core_agents(db, org)
-    return _build_runtime_capabilities_payload(
-        db=db,
-        org=org,
-        include_hidden=bool(include_hidden),
-        user_can_view_hidden=_user_can_view_hidden_runtime_catalog(user),
-    )
-
-
 @app.get("/api/agents/runtime-catalog")
-def get_runtime_agent_catalog(
-    include_hidden: bool = Query(default=False),
-    x_org_slug: Optional[str] = Header(default=None),
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def get_runtime_catalog(include_hidden: bool = False, x_org_slug: Optional[str] = Header(default=None), user=Depends(get_current_user), db: Session = Depends(get_db)):
     org = get_request_org(user, x_org_slug)
     ensure_core_agents(db, org)
-    privileged = _user_can_view_hidden_runtime_catalog(user)
-    applied_hidden = bool(include_hidden and privileged)
-    catalog = _runtime_agent_catalog(db=db, org=org, include_hidden=applied_hidden)
+    privileged = _payload_has_catalog_privileged_access(user)
+    if include_hidden and not privileged:
+        raise HTTPException(status_code=403, detail="Privileged catalog required")
+    catalog = _runtime_catalog(db, org, include_hidden=include_hidden, privileged=privileged and include_hidden)
     return {
-        "ok": True,
-        "org": org,
+        "org_slug": org,
+        "source": "privileged" if include_hidden and privileged else "public",
         "count": len(catalog),
-        "include_hidden_requested": bool(include_hidden),
-        "include_hidden_applied": applied_hidden,
-        "catalog": catalog,
+        "items": catalog,
     }
 
 
-@app.get("/api/agents/runtime-source-audit")
-def get_runtime_agent_source_audit(
-    x_org_slug: Optional[str] = Header(default=None),
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+@app.get("/api/agents/capabilities")
+def get_agent_capabilities(include_hidden: bool = False, x_org_slug: Optional[str] = Header(default=None), user=Depends(get_current_user), db: Session = Depends(get_db)):
     org = get_request_org(user, x_org_slug)
     ensure_core_agents(db, org)
-    privileged = _user_can_view_hidden_runtime_catalog(user)
-    if not privileged:
-        raise HTTPException(status_code=403, detail="RUNTIME_SOURCE_AUDIT_FORBIDDEN")
-    return _runtime_agent_source_audit(db=db, org=org)
+    privileged = _payload_has_catalog_privileged_access(user)
+    if include_hidden and not privileged:
+        raise HTTPException(status_code=403, detail="Privileged catalog required")
+    return _build_runtime_capabilities_payload(db=db, org=org, include_hidden=include_hidden, privileged=privileged and include_hidden)
+
+
+@app.get("/api/admin/agents/hidden/bootstrap-status")
+def admin_hidden_bootstrap_status(_admin=Depends(require_admin_access), x_org_slug: Optional[str] = Header(default=None)):
+    org = get_org(x_org_slug)
+    items = [item for item in _load_hidden_agent_seed() if not item.get("org_slug") or item.get("org_slug") == org]
+    return {
+        "org_slug": org,
+        "seed_path": _hidden_agents_seed_path(),
+        "count": len(items),
+        "items": items,
+    }
 
 
 
@@ -11827,11 +11469,7 @@ async def chat_stream(
                 should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
                 if blocked_reply is None:
                     try:
-                        if _wants_hidden_source_audit(message):
-                            capability_inventory_answer = _build_runtime_agent_source_audit_text(db=db, org=org, privileged=_user_can_view_hidden_runtime_catalog(user))
-                        elif _is_agent_catalog_request(message):
-                            capability_inventory_answer = _build_runtime_agent_catalog_text(db=db, org=org, include_hidden=_wants_hidden_agent_catalog(message), privileged=_user_can_view_hidden_runtime_catalog(user), technical_only=_wants_technical_team_only(message))
-                        elif _is_github_access_request(message):
+                        if _is_github_access_request(message):
                             capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
                         elif _is_capability_inventory_request(message):
                             capability_inventory_answer = _build_capability_inventory_text(db=db, org=org)
