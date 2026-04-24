@@ -1,0 +1,32 @@
+[
+  {
+    "id": "hidden::auditor",
+    "slug": "auditor",
+    "name": "Auditor",
+    "role": "auditor",
+    "model": "gpt-4o-mini",
+    "voice_id": "echo",
+    "default": false,
+    "hidden": true,
+    "internal": true,
+    "system": true,
+    "available_to_runtime": true,
+    "org_slug": "public",
+    "description": "Auditoria técnica e conformidade"
+  },
+  {
+    "id": "hidden::alex",
+    "slug": "alex",
+    "name": "Alex",
+    "role": "engineer",
+    "model": "gpt-4o-mini",
+    "voice_id": "echo",
+    "default": false,
+    "hidden": true,
+    "internal": true,
+    "system": false,
+    "available_to_runtime": true,
+    "org_slug": "public",
+    "description": "Especialista em backend e integrações"
+  }
+]
