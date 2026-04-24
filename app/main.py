@@ -5775,7 +5775,15 @@ def _github_write_subject(payload: Optional[Dict[str, Any]]) -> str:
     return str(payload.get("email") or payload.get("sub") or "unknown").strip() or "unknown"
 
 def _github_write_approval_key(org: str, thread_id: Optional[str], user_id: Optional[str]) -> str:
-    return f"{org}::{thread_id or 'global'}::{user_id or 'unknown'}"
+    org_key = str(org or "default").strip() or "default"
+    thread_key = str(thread_id or "global").strip() or "global"
+    user_key = str(user_id or "unknown").strip() or "unknown"
+    return f"{org_key}::{thread_key}::{user_key}"
+
+def _github_write_user_approval_key(org: str, user_id: Optional[str]) -> str:
+    org_key = str(org or "default").strip() or "default"
+    user_key = str(user_id or "unknown").strip() or "unknown"
+    return f"{org_key}::userwide::{user_key}"
 
 def _github_write_cleanup_locked() -> None:
     now = now_ts()
@@ -5792,17 +5800,28 @@ def _github_write_cleanup_locked() -> None:
 
 def _github_write_get_active_approval(org: str, thread_id: Optional[str], payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     user_id = str((payload or {}).get("sub") or "").strip()
-    key = _github_write_approval_key(org, thread_id, user_id)
+    thread_key = _github_write_approval_key(org, thread_id, user_id)
+    userwide_key = _github_write_user_approval_key(org, user_id)
     with _github_write_lock:
         _github_write_cleanup_locked()
-        item = _github_write_approval_state.get(key)
-        return dict(item) if isinstance(item, dict) else None
+        item = _github_write_approval_state.get(thread_key)
+        if isinstance(item, dict):
+            return dict(item)
+        item = _github_write_approval_state.get(userwide_key)
+        if isinstance(item, dict):
+            promoted = dict(item)
+            promoted["approval_scope_mode"] = str(promoted.get("approval_scope_mode") or "user_ttl")
+            promoted["resolved_for_thread_id"] = str(thread_id or "global")
+            return promoted
+        return None
 
 def _github_write_clear_approval(org: str, thread_id: Optional[str], payload: Optional[Dict[str, Any]]) -> None:
     user_id = str((payload or {}).get("sub") or "").strip()
-    key = _github_write_approval_key(org, thread_id, user_id)
+    thread_key = _github_write_approval_key(org, thread_id, user_id)
+    userwide_key = _github_write_user_approval_key(org, user_id)
     with _github_write_lock:
-        _github_write_approval_state.pop(key, None)
+        _github_write_approval_state.pop(thread_key, None)
+        _github_write_approval_state.pop(userwide_key, None)
 
 def _github_extract_scoped_files(user_text: str) -> List[str]:
     txt = (user_text or "").strip()
@@ -6041,6 +6060,7 @@ def _github_store_write_approval(
 ) -> Dict[str, Any]:
     user_id = str((payload or {}).get("sub") or "").strip()
     key = _github_write_approval_key(org, thread_id, user_id)
+    userwide_key = _github_write_user_approval_key(org, user_id)
     allowed_actions: List[str] = []
     if auth_flags.get("allow_branch"):
         allowed_actions.append("create_branch")
@@ -6067,10 +6087,12 @@ def _github_store_write_approval(
         "deny_merge": bool(auth_flags.get("deny_merge")),
         "actions_allowed": allowed_actions,
         "scope_files": list(auth_flags.get("scope_files") or []),
+        "approval_scope_mode": "user_ttl",
     }
     with _github_write_lock:
         _github_write_cleanup_locked()
-        _github_write_approval_state[key] = approval
+        _github_write_approval_state[key] = dict(approval)
+        _github_write_approval_state[userwide_key] = dict(approval)
     return approval
 
 def _build_github_write_response_text(
@@ -6105,6 +6127,10 @@ def _build_github_write_response_text(
         scope_files = list(approval.get("scope_files") or [])
         if scope_files:
             lines.append(f"- scope_files: {', '.join(scope_files)}")
+        if approval.get("approval_scope_mode"):
+            lines.append(f"- approval_scope_mode: {approval.get('approval_scope_mode')}")
+        if approval.get("resolved_for_thread_id"):
+            lines.append(f"- resolved_for_thread_id: {approval.get('resolved_for_thread_id')}")
         if approval.get("deny_merge"):
             lines.append("- merge: não autorizado")
         lines.append("")
