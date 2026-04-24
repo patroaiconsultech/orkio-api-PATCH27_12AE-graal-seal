@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
+import urllib.request as _urllib_request
+import ssl as _ssl
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException
@@ -130,6 +133,116 @@ def _safe_patch_policy() -> Dict[str, Any]:
         "write_allowed_agents": _allowed_write_agents(),
         "read_allowed_agents": _allowed_read_agents(),
     }
+
+
+
+def _github_runtime_token() -> str:
+    return (
+        _clean_env("ORKIO_GITHUB_CONTROL_PLANE_TOKEN", "")
+        or _clean_env("GITHUB_TOKEN", "")
+        or _clean_env("GH_TOKEN", "")
+    )
+
+
+def _github_headers() -> Dict[str, str]:
+    token = _github_runtime_token()
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "orkio-orion-runtime/1.0",
+        "Content-Type": "application/json",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _github_api_json(method: str, url: str) -> tuple[int, Any]:
+    req = _urllib_request.Request(url, headers=_github_headers(), method=method.upper())
+    ctx = _ssl.create_default_context()
+    try:
+        with _urllib_request.urlopen(req, context=ctx, timeout=15) as resp:
+            raw = resp.read().decode("utf-8", errors="replace") or "null"
+            try:
+                return int(getattr(resp, "status", 200) or 200), json.loads(raw)
+            except Exception:
+                return int(getattr(resp, "status", 200) or 200), {"raw": raw}
+    except Exception as exc:
+        status = int(getattr(exc, "code", 0) or 0)
+        body = getattr(exc, "read", None)
+        parsed: Any = {}
+        try:
+            if body:
+                raw = body().decode("utf-8", errors="replace") or "null"
+                parsed = json.loads(raw)
+        except Exception:
+            parsed = {"message": str(exc)}
+        if not parsed:
+            parsed = {"message": str(exc)}
+        return status, parsed
+
+
+def _looks_like_repo_inventory_request(message: str) -> bool:
+    txt = (message or "").strip().lower()
+    if not txt:
+        return False
+    patterns = [
+        r"github_repo_web",
+        r"github_repo\b",
+        r"reposit[oó]rio backend",
+        r"reposit[oó]rio frontend",
+        r"repos?it[oó]rios? ativos",
+        r"quais os reposit[oó]rios",
+        r"valor bruto carregado",
+        r"runtime.*github_repo",
+        r"listar as novas repos",
+    ]
+    return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
+
+
+def _wants_root_evidence(message: str) -> bool:
+    txt = (message or "").strip().lower()
+    if not txt:
+        return False
+    markers = [
+        "raiz",
+        "root",
+        "readme",
+        "3 arquivos",
+        "3 pastas",
+        "arquivos ou pastas",
+        "evidência",
+        "evidencia",
+        "cite pelo menos 3",
+        "mostre pelo menos 3",
+    ]
+    return any(marker in txt for marker in markers)
+
+
+def _github_root_entries(repo: str, branch: str, *, limit: int = 3) -> Dict[str, Any]:
+    token = _github_runtime_token()
+    if not repo:
+        return {"ok": False, "message": "repo_not_configured", "entries": []}
+    if not token:
+        return {"ok": False, "message": "github_token_not_available", "entries": []}
+    url = f"https://api.github.com/repos/{repo}/contents?ref={branch}"
+    status, body = _github_api_json("GET", url)
+    if status != 200 or not isinstance(body, list):
+        message = ""
+        if isinstance(body, dict):
+            message = str(body.get("message") or "").strip()
+        return {"ok": False, "message": message or f"root_list_failed_status_{status}", "entries": []}
+    entries: List[str] = []
+    for item in body:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        kind = str(item.get("type") or "").strip()
+        if not name:
+            continue
+        entries.append(f"{name} ({kind or 'item'})")
+        if len(entries) >= limit:
+            break
+    return {"ok": True, "entries": entries}
 
 
 def _scan_categories() -> List[Dict[str, str]]:
@@ -364,6 +477,7 @@ def _looks_like_github_runtime_request(message: str) -> bool:
     )
     return any(k in txt for k in keywords)
 
+
 @router.post("/github/execute")
 def github_execute(inp: OrionRuntimeIn) -> Dict[str, Any]:
     visible_agent = _resolve_visible_agent(inp.message, default="orion")
@@ -396,19 +510,68 @@ def github_execute(inp: OrionRuntimeIn) -> Dict[str, Any]:
             "requested_write": True,
         }
 
+    backend_repo = _github_repo()
+    frontend_repo = _github_repo_web()
+    default_branch = _default_branch()
+    repository_details: List[Dict[str, Any]] = []
+    if backend_repo:
+        repository_details.append({"kind": "backend", "repo": backend_repo, "branch": default_branch})
+    if frontend_repo:
+        repository_details.append({"kind": "frontend", "repo": frontend_repo, "branch": default_branch})
+
+    if _looks_like_repo_inventory_request(message):
+        payload: Dict[str, Any] = {
+            "ok": True,
+            "service": "orion_internal",
+            "mode": "github_runtime_inventory",
+            "event": "GITHUB_RUNTIME_INVENTORY_OK",
+            "visible_agent": visible_agent,
+            "provider": "github",
+            "message": "Inventário de repositórios do runtime coletado com leitura explícita das variáveis configuradas.",
+            "requested_write": requested_write,
+            "write_enabled": _github_write_enabled(),
+            "pr_enabled": _github_pr_enabled(),
+            "main_direct_write_allowed": _main_direct_allowed(),
+            "default_branch": default_branch,
+            "branch": default_branch,
+            "backend_repo": backend_repo,
+            "frontend_repo": frontend_repo,
+            "repositories": [repo for repo in [backend_repo, frontend_repo] if repo],
+            "repository_details": repository_details,
+            "prepare_only": bool(inp.prepare_only),
+            "generated_at": _now_ts(),
+        }
+        if _wants_root_evidence(message):
+            backend_root = _github_root_entries(backend_repo, default_branch, limit=3)
+            frontend_root = _github_root_entries(frontend_repo, default_branch, limit=3)
+            payload["backend_root_entries"] = list(backend_root.get("entries") or [])
+            payload["frontend_root_entries"] = list(frontend_root.get("entries") or [])
+            payload["backend_root_ok"] = bool(backend_root.get("ok"))
+            payload["frontend_root_ok"] = bool(frontend_root.get("ok"))
+            if not backend_root.get("ok"):
+                payload["backend_root_error"] = str(backend_root.get("message") or "").strip()
+            if not frontend_root.get("ok"):
+                payload["frontend_root_error"] = str(frontend_root.get("message") or "").strip()
+        return payload
+
     return {
         "ok": True,
         "service": "orion_internal",
         "mode": "github_execute",
+        "event": "GITHUB_RUNTIME_CONFIG_OK",
         "visible_agent": visible_agent,
+        "provider": "github",
         "message": message,
         "requested_write": requested_write,
         "write_enabled": _github_write_enabled(),
         "pr_enabled": _github_pr_enabled(),
         "main_direct_write_allowed": _main_direct_allowed(),
-        "default_branch": _default_branch(),
-        "backend_repo": _github_repo(),
-        "frontend_repo": _github_repo_web(),
+        "default_branch": default_branch,
+        "branch": default_branch,
+        "backend_repo": backend_repo,
+        "frontend_repo": frontend_repo,
+        "repositories": [repo for repo in [backend_repo, frontend_repo] if repo],
+        "repository_details": repository_details,
         "prepare_only": bool(inp.prepare_only),
         "generated_at": _now_ts(),
     }
