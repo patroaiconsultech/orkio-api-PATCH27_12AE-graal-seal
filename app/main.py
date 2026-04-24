@@ -5614,6 +5614,97 @@ def _runtime_agent_catalog(db: Optional[Session] = None, org: Optional[str] = No
 
 
 
+def _runtime_agent_source_scope(org_slug: Optional[str]) -> str:
+    value = str(org_slug or "").strip()
+    if not value:
+        return "global"
+    lowered = value.lower()
+    if lowered in {"global", "system", "root", "*"}:
+        return "global"
+    return "org"
+
+
+def _runtime_agent_catalog_audit_entry(row: Any) -> Dict[str, Any]:
+    slug = _slugify_runtime_agent(getattr(row, "name", None))
+    flags = _runtime_agent_flags(row, slug)
+    org_slug = str(getattr(row, "org_slug", "") or "").strip()
+    return {
+        "id": str(getattr(row, "id", "") or slug or "unknown"),
+        "slug": slug or "unknown",
+        "name": str(getattr(row, "name", "") or slug or "unknown").strip(),
+        "role": _runtime_agent_role_for_row(row, slug or "unknown"),
+        "org_slug": org_slug or None,
+        "scope": _runtime_agent_source_scope(org_slug),
+        "model": str(getattr(row, "model", "") or "").strip() or None,
+        "voice_id": resolve_agent_voice(row),
+        "hidden": bool(flags.get("hidden")),
+        "internal": bool(flags.get("internal")),
+        "system": bool(flags.get("system")),
+        "available_to_runtime": _runtime_agent_available_for_runtime(row),
+        "is_default": bool(getattr(row, "is_default", False)),
+    }
+
+
+def _runtime_agent_source_audit(db: Optional[Session] = None, org: Optional[str] = None) -> Dict[str, Any]:
+    rows: List[Any] = []
+    if db is not None:
+        try:
+            rows = db.execute(select(Agent).order_by(Agent.created_at.asc())).scalars().all()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            rows = []
+
+    entries = [_runtime_agent_catalog_audit_entry(row) for row in rows]
+    current_org = str(org or "").strip()
+    same_org = [item for item in entries if str(item.get("org_slug") or "").strip() == current_org]
+    global_scope = [item for item in entries if item.get("scope") == "global"]
+    other_org = [
+        item for item in entries
+        if str(item.get("org_slug") or "").strip()
+        and str(item.get("org_slug") or "").strip() != current_org
+        and item.get("scope") != "global"
+    ]
+    flagged_same_org = [item for item in same_org if item.get("hidden") or item.get("internal") or item.get("system")]
+    flagged_global = [item for item in global_scope if item.get("hidden") or item.get("internal") or item.get("system")]
+    flagged_other_org = [item for item in other_org if item.get("hidden") or item.get("internal") or item.get("system")]
+
+    privileged_catalog = _runtime_agent_catalog(db=db, org=org, include_hidden=True)
+    public_catalog = _runtime_agent_catalog(db=db, org=org, include_hidden=False)
+
+    return {
+        "ok": True,
+        "org": current_org or None,
+        "counts": {
+            "db_total": len(entries),
+            "public_runtime_count": len(public_catalog),
+            "privileged_runtime_count": len(privileged_catalog),
+            "current_org_total": len(same_org),
+            "current_org_hidden": sum(1 for item in same_org if item.get("hidden")),
+            "current_org_internal": sum(1 for item in same_org if item.get("internal")),
+            "current_org_system": sum(1 for item in same_org if item.get("system")),
+            "global_scope_total": len(global_scope),
+            "global_scope_hidden": sum(1 for item in global_scope if item.get("hidden")),
+            "global_scope_internal": sum(1 for item in global_scope if item.get("internal")),
+            "global_scope_system": sum(1 for item in global_scope if item.get("system")),
+            "other_org_total": len(other_org),
+            "other_org_hidden": sum(1 for item in other_org if item.get("hidden")),
+            "other_org_internal": sum(1 for item in other_org if item.get("internal")),
+            "other_org_system": sum(1 for item in other_org if item.get("system")),
+            "excluded_by_scope_total": len(flagged_global) + len(flagged_other_org),
+        },
+        "same_org_agents": same_org,
+        "flagged_same_org_agents": flagged_same_org,
+        "global_scope_agents": global_scope,
+        "flagged_global_agents": flagged_global,
+        "other_org_agents": other_org,
+        "flagged_other_org_agents": flagged_other_org,
+        "excluded_by_scope_agents": flagged_global + flagged_other_org,
+    }
+
+
 def _build_runtime_capabilities_payload(
     db: Optional[Session] = None,
     org: Optional[str] = None,
@@ -5820,6 +5911,28 @@ def _wants_technical_team_only(user_text: str) -> bool:
     return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
 
 
+def _wants_hidden_source_audit(user_text: str) -> bool:
+    txt = (user_text or "").strip().lower()
+    if not txt:
+        return False
+    patterns = [
+        r"auditoria de fonte",
+        r"source audit",
+        r"agentes fora do escopo",
+        r"fora do escopo",
+        r"por org",
+        r"por organiza[cç][aã]o",
+        r"quais agentes ficaram fora",
+        r"agent source audit",
+        r"hidden agent source",
+        r"cat[aá]logo privilegiado.*totais",
+        r"total com hidden=true",
+        r"total com internal=true",
+        r"total com system=true",
+    ]
+    return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
+
+
 def _build_runtime_agent_catalog_text(
     db: Optional[Session] = None,
     org: Optional[str] = None,
@@ -5894,6 +6007,73 @@ def _build_runtime_agent_catalog_text(
                 lines.append(f"- {item}")
     return "\n".join(lines)
 
+
+
+def _build_runtime_agent_source_audit_text(
+    db: Optional[Session] = None,
+    org: Optional[str] = None,
+    privileged: bool = False,
+) -> str:
+    if not privileged:
+        return "NÃO TENHO ACESSO À AUDITORIA DE FONTE DO CATÁLOGO."
+    audit = _runtime_agent_source_audit(db=db, org=org)
+    counts = audit.get("counts") if isinstance(audit.get("counts"), dict) else {}
+    same_org_flagged = list(audit.get("flagged_same_org_agents") or [])
+    excluded = list(audit.get("excluded_by_scope_agents") or [])
+    global_flagged = list(audit.get("flagged_global_agents") or [])
+    other_org_flagged = list(audit.get("flagged_other_org_agents") or [])
+
+    lines = ["AUDITORIA DE FONTE DO CATÁLOGO:"]
+    lines.append(f"- org_atual: {str(audit.get('org') or 'n/d')}")
+    lines.append(f"- db_total: {int(counts.get('db_total') or 0)}")
+    lines.append(f"- public_runtime_count: {int(counts.get('public_runtime_count') or 0)}")
+    lines.append(f"- privileged_runtime_count: {int(counts.get('privileged_runtime_count') or 0)}")
+    lines.append(f"- current_org_total: {int(counts.get('current_org_total') or 0)}")
+    lines.append(f"- current_org_hidden: {int(counts.get('current_org_hidden') or 0)}")
+    lines.append(f"- current_org_internal: {int(counts.get('current_org_internal') or 0)}")
+    lines.append(f"- current_org_system: {int(counts.get('current_org_system') or 0)}")
+    lines.append(f"- global_scope_total: {int(counts.get('global_scope_total') or 0)}")
+    lines.append(f"- global_scope_hidden: {int(counts.get('global_scope_hidden') or 0)}")
+    lines.append(f"- global_scope_internal: {int(counts.get('global_scope_internal') or 0)}")
+    lines.append(f"- global_scope_system: {int(counts.get('global_scope_system') or 0)}")
+    lines.append(f"- other_org_total: {int(counts.get('other_org_total') or 0)}")
+    lines.append(f"- other_org_hidden: {int(counts.get('other_org_hidden') or 0)}")
+    lines.append(f"- other_org_internal: {int(counts.get('other_org_internal') or 0)}")
+    lines.append(f"- other_org_system: {int(counts.get('other_org_system') or 0)}")
+    lines.append(f"- excluded_by_scope_total: {int(counts.get('excluded_by_scope_total') or 0)}")
+
+    if same_org_flagged:
+        lines.append("FLAGGED NO ORG ATUAL:")
+        for item in same_org_flagged[:25]:
+            lines.append(
+                f"- {str(item.get('name') or item.get('slug') or 'agente')} | slug={str(item.get('slug') or 'n/d')} | role={str(item.get('role') or 'n/d')} | hidden={bool(item.get('hidden'))} | internal={bool(item.get('internal'))} | system={bool(item.get('system'))}"
+            )
+    else:
+        lines.append("FLAGGED NO ORG ATUAL: nenhum")
+
+    if global_flagged:
+        lines.append("FLAGGED EM ESCOPO GLOBAL/SYSTEM:")
+        for item in global_flagged[:25]:
+            lines.append(
+                f"- {str(item.get('name') or item.get('slug') or 'agente')} | slug={str(item.get('slug') or 'n/d')} | org={str(item.get('org_slug') or 'global')} | role={str(item.get('role') or 'n/d')} | hidden={bool(item.get('hidden'))} | internal={bool(item.get('internal'))} | system={bool(item.get('system'))}"
+            )
+    else:
+        lines.append("FLAGGED EM ESCOPO GLOBAL/SYSTEM: nenhum")
+
+    if other_org_flagged:
+        lines.append("FLAGGED EM OUTRAS ORGS:")
+        for item in other_org_flagged[:25]:
+            lines.append(
+                f"- {str(item.get('name') or item.get('slug') or 'agente')} | slug={str(item.get('slug') or 'n/d')} | org={str(item.get('org_slug') or 'n/d')} | role={str(item.get('role') or 'n/d')} | hidden={bool(item.get('hidden'))} | internal={bool(item.get('internal'))} | system={bool(item.get('system'))}"
+            )
+    else:
+        lines.append("FLAGGED EM OUTRAS ORGS: nenhum")
+
+    if not excluded:
+        lines.append("VEREDITO: nenhum agente oculto/interno/system fora do escopo atual foi encontrado na fonte consultada.")
+    else:
+        lines.append("VEREDITO: existem agentes potencialmente fora do escopo atual; revisar org_slug/flags/query do runtime.")
+    return "\n".join(lines)
 
 def _is_agent_catalog_request(user_text: str) -> bool:
     txt = (user_text or "").strip().lower()
@@ -8089,7 +8269,9 @@ def chat(
         should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
         if blocked_reply is None:
             try:
-                if _is_agent_catalog_request(inp.message):
+                if _wants_hidden_source_audit(inp.message):
+                    capability_inventory_answer = _build_runtime_agent_source_audit_text(db=db, org=org, privileged=_user_can_view_hidden_runtime_catalog(user))
+                elif _is_agent_catalog_request(inp.message):
                     capability_inventory_answer = _build_runtime_agent_catalog_text(db=db, org=org, include_hidden=_wants_hidden_agent_catalog(inp.message), privileged=_user_can_view_hidden_runtime_catalog(user), technical_only=_wants_technical_team_only(inp.message))
                 elif _is_github_access_request(inp.message):
                     capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
@@ -10797,6 +10979,20 @@ def get_runtime_agent_catalog(
     }
 
 
+@app.get("/api/agents/runtime-source-audit")
+def get_runtime_agent_source_audit(
+    x_org_slug: Optional[str] = Header(default=None),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    org = get_request_org(user, x_org_slug)
+    ensure_core_agents(db, org)
+    privileged = _user_can_view_hidden_runtime_catalog(user)
+    if not privileged:
+        raise HTTPException(status_code=403, detail="RUNTIME_SOURCE_AUDIT_FORBIDDEN")
+    return _runtime_agent_source_audit(db=db, org=org)
+
+
 
 @app.get("/api/admin/agents/{agent_id}/links")
 def admin_get_agent_links(agent_id: str, _admin=Depends(require_admin_access), x_org_slug: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
@@ -11631,7 +11827,9 @@ async def chat_stream(
                 should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
                 if blocked_reply is None:
                     try:
-                        if _is_agent_catalog_request(message):
+                        if _wants_hidden_source_audit(message):
+                            capability_inventory_answer = _build_runtime_agent_source_audit_text(db=db, org=org, privileged=_user_can_view_hidden_runtime_catalog(user))
+                        elif _is_agent_catalog_request(message):
                             capability_inventory_answer = _build_runtime_agent_catalog_text(db=db, org=org, include_hidden=_wants_hidden_agent_catalog(message), privileged=_user_can_view_hidden_runtime_catalog(user), technical_only=_wants_technical_team_only(message))
                         elif _is_github_access_request(message):
                             capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
