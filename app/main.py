@@ -5457,8 +5457,81 @@ def _runtime_available_agents(db: Optional[Session] = None, org: Optional[str] =
 
 
 
+def _runtime_agent_role_for_slug(slug: str) -> str:
+    normalized = str(slug or "").strip().lower()
+    mapping = {
+        "orkio": "orchestrator",
+        "orion": "cto",
+        "chris": "cfo",
+        "auditor": "technical_auditor",
+    }
+    return mapping.get(normalized, "specialist")
+
+
+def _runtime_agent_catalog(db: Optional[Session] = None, org: Optional[str] = None) -> List[Dict[str, Any]]:
+    catalog: List[Dict[str, Any]] = []
+    if db is not None and org:
+        try:
+            ensure_core_agents(db, org)
+            rows = db.execute(
+                select(Agent).where(Agent.org_slug == org).order_by(Agent.created_at.asc())
+            ).scalars().all()
+            seen_slugs: set[str] = set()
+            for row in rows:
+                slug = _canonical_runtime_agent_slug(getattr(row, "name", None))
+                if not slug or slug in seen_slugs:
+                    continue
+                seen_slugs.add(slug)
+                catalog.append({
+                    "id": str(getattr(row, "id", "") or slug),
+                    "slug": slug,
+                    "name": str(getattr(row, "name", "") or slug.title()),
+                    "role": _runtime_agent_role_for_slug(slug),
+                    "description": str(getattr(row, "description", "") or "").strip(),
+                    "model": str(getattr(row, "model", "") or "").strip() or None,
+                    "voice_id": resolve_agent_voice(row),
+                    "avatar_url": getattr(row, "avatar_url", None),
+                    "is_default": bool(getattr(row, "is_default", False)),
+                    "available_in_runtime": True,
+                    "source": "db",
+                })
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+    if catalog:
+        return catalog
+
+    fallback_names = {
+        "orkio": "Orkio",
+        "orion": "Orion",
+        "chris": "Chris",
+        "auditor": "Auditor",
+    }
+    for slug in _runtime_available_agents(db=db, org=org):
+        catalog.append({
+            "id": slug,
+            "slug": slug,
+            "name": fallback_names.get(slug, slug.title()),
+            "role": _runtime_agent_role_for_slug(slug),
+            "description": "",
+            "model": None,
+            "voice_id": None,
+            "avatar_url": None,
+            "is_default": slug == "orkio",
+            "available_in_runtime": True,
+            "source": "fallback",
+        })
+    return catalog
+
+
+
 def _build_runtime_capabilities_payload(db: Optional[Session] = None, org: Optional[str] = None) -> Dict[str, Any]:
-    available_agents = _runtime_available_agents(db, org)
+    agent_catalog = _runtime_agent_catalog(db, org)
+    available_agents = [str(item.get("slug") or "").strip() for item in agent_catalog if str(item.get("slug") or "").strip()]
+    if not available_agents:
+        available_agents = _runtime_available_agents(db, org)
     github_ctx = control_plane_github_context(repo=_clean_env(os.getenv("GITHUB_REPO", "")) or None)
     github_repo = _clean_env(os.getenv("GITHUB_REPO", ""))
     github_repo_web = _clean_env(os.getenv("GITHUB_REPO_WEB", ""))
@@ -5499,6 +5572,8 @@ def _build_runtime_capabilities_payload(db: Optional[Session] = None, org: Optio
             "enabled": len(available_agents) > 0,
             "available_agents": available_agents,
             "handoff_enabled": len(available_agents) > 1,
+            "catalog_available": len(agent_catalog) > 0,
+            "agent_catalog": agent_catalog,
         },
         "github": {
             "available": github_available,
@@ -5578,6 +5653,7 @@ def _build_capability_inventory_text(db: Optional[Session] = None, org: Optional
     multiagent = reg.get("multiagent") if isinstance(reg.get("multiagent"), dict) else {}
     github = reg.get("github") if isinstance(reg.get("github"), dict) else {}
     available_agents = list(multiagent.get("available_agents") or [])
+    agent_catalog = list(multiagent.get("agent_catalog") or [])
     targets = github.get("repository_targets") if isinstance(github.get("repository_targets"), dict) else {}
     backend_repo = str(targets.get("backend") or "").strip()
     frontend_repo = str(targets.get("frontend") or "").strip()
@@ -5587,6 +5663,13 @@ def _build_capability_inventory_text(db: Optional[Session] = None, org: Optional
         lines.append("Multiagente operacional:")
         lines.append("- agentes disponíveis: " + ", ".join(available_agents))
         lines.append(f"- handoff habilitado: {bool(multiagent.get('handoff_enabled'))}")
+        if agent_catalog:
+            lines.append("- catálogo operacional:")
+            for item in agent_catalog:
+                slug = str(item.get("slug") or "").strip()
+                role = str(item.get("role") or "").strip() or "specialist"
+                name = str(item.get("name") or slug or "agente").strip()
+                lines.append(f"  - {slug or name}: {name} | role={role}")
     else:
         lines.append("Multiagente ainda não confirmado em runtime.")
     lines.append("")
@@ -5602,6 +5685,48 @@ def _build_capability_inventory_text(db: Optional[Session] = None, org: Optional
         lines.append("GitHub operacional:")
         lines.append("- indisponível neste ambiente")
     return "\n".join(lines)
+
+def _build_runtime_agent_catalog_text(db: Optional[Session] = None, org: Optional[str] = None) -> str:
+    reg = _build_runtime_capabilities_payload(db=db, org=org)
+    multiagent = reg.get("multiagent") if isinstance(reg.get("multiagent"), dict) else {}
+    catalog = list(multiagent.get("agent_catalog") or [])
+    if not catalog:
+        return "NÃO TENHO ACESSO AO CATÁLOGO."
+    lines = ["CATÁLOGO DE AGENTES DO RUNTIME:"]
+    for item in catalog:
+        slug = str(item.get("slug") or "").strip()
+        name = str(item.get("name") or slug or "agente").strip()
+        role = str(item.get("role") or "").strip() or "specialist"
+        agent_id = str(item.get("id") or slug).strip()
+        model = str(item.get("model") or "").strip()
+        voice_id = str(item.get("voice_id") or "").strip()
+        is_default = bool(item.get("is_default"))
+        lines.append(f"- id: {agent_id}")
+        lines.append(f"  slug: {slug or 'n/d'}")
+        lines.append(f"  name: {name}")
+        lines.append(f"  role: {role}")
+        if model:
+            lines.append(f"  model: {model}")
+        if voice_id:
+            lines.append(f"  voice_id: {voice_id}")
+        lines.append(f"  default: {is_default}")
+    return "\n".join(lines)
+
+def _is_agent_catalog_request(user_text: str) -> bool:
+    txt = (user_text or "").strip().lower()
+    if not txt:
+        return False
+    patterns = [
+        r"cat[aá]logo de agentes",
+        r"catalogo de agentes",
+        r"quais agentes .*runtime",
+        r"agentes .*acess[íi]veis .*runtime",
+        r"lista .*agentes .*runtime",
+        r"runtime .*agentes",
+        r"fonte operacional .*agentes",
+        r"cat[aá]logo .*runtime",
+    ]
+    return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
 
 def _is_capability_inventory_request(user_text: str) -> bool:
     txt = (user_text or "").strip().lower()
@@ -7778,7 +7903,9 @@ def chat(
         should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
         if blocked_reply is None:
             try:
-                if _is_github_access_request(inp.message):
+                if _is_agent_catalog_request(inp.message):
+                    capability_inventory_answer = _build_runtime_agent_catalog_text(db=db, org=org)
+                elif _is_github_access_request(inp.message):
                     capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
                 elif _is_capability_inventory_request(inp.message):
                     capability_inventory_answer = _build_capability_inventory_text(db=db, org=org)
@@ -10452,6 +10579,19 @@ def get_agent_capabilities(x_org_slug: Optional[str] = Header(default=None), use
     return _build_runtime_capabilities_payload(db=db, org=org)
 
 
+@app.get("/api/agents/runtime-catalog")
+def get_runtime_agent_catalog(x_org_slug: Optional[str] = Header(default=None), user=Depends(get_current_user), db: Session = Depends(get_db)):
+    org = get_request_org(user, x_org_slug)
+    ensure_core_agents(db, org)
+    catalog = _runtime_agent_catalog(db=db, org=org)
+    return {
+        "ok": True,
+        "org": org,
+        "count": len(catalog),
+        "catalog": catalog,
+    }
+
+
 
 @app.get("/api/admin/agents/{agent_id}/links")
 def admin_get_agent_links(agent_id: str, _admin=Depends(require_admin_access), x_org_slug: Optional[str] = Header(default=None), db: Session = Depends(get_db)):
@@ -11286,7 +11426,9 @@ async def chat_stream(
                 should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
                 if blocked_reply is None:
                     try:
-                        if _is_github_access_request(message):
+                        if _is_agent_catalog_request(message):
+                            capability_inventory_answer = _build_runtime_agent_catalog_text(db=db, org=org)
+                        elif _is_github_access_request(message):
                             capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
                         elif _is_capability_inventory_request(message):
                             capability_inventory_answer = _build_capability_inventory_text(db=db, org=org)
