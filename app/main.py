@@ -6062,10 +6062,20 @@ def _build_github_write_response_text(
             )
 
     try:
-        raw = orion_github_execute(OrionExecuteIn(message=user_text))
-        normalized = _normalize_orion_runtime_execution_result(raw if isinstance(raw, dict) else {})
-        if not normalized.get("handled"):
-            normalized["handled"] = True
+        if req_flags.get("create_branch"):
+            branch_req = _extract_github_create_branch_request(user_text) or {}
+            if branch_req.get("invalid"):
+                return "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: nome_de_branch_inseguro"
+            branch_name = str(branch_req.get("branch") or "").strip() or _github_generated_branch_name("sandbox/sanity")
+            normalized = _github_create_branch_capability(
+                branch=branch_name,
+                trace_id=str(approval.get("approval_id") or ""),
+            )
+        else:
+            raw = orion_github_execute(OrionExecuteIn(message=user_text))
+            normalized = _normalize_orion_runtime_execution_result(raw if isinstance(raw, dict) else {})
+            if not normalized.get("handled"):
+                normalized["handled"] = True
         if not normalized.get("success"):
             return normalized.get("message") or "Não foi possível concluir a ação GitHub solicitada."
         base = _build_execution_result_payload(normalized)
@@ -7107,6 +7117,149 @@ def _github_create_branch_capability(*, branch: str, trace_id: Optional[str] = N
     repo = _clean_env(os.getenv("GITHUB_REPO", ""))
     base_branch = _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main"
     token = _github_token_value()
+
+    branch = re.sub(r"^refs/heads/", "", (branch or "").strip())
+    if not branch:
+        return {
+            "handled": True,
+            "success": False,
+            "provider": "github",
+            "repo": repo,
+            "branch": "",
+            "base_branch": base_branch,
+            "message": "Informe um nome de branch válido para criação no GitHub.",
+        }
+    if branch.startswith("/") or ".." in branch or "\\" in branch or " " in branch:
+        return {
+            "handled": True,
+            "success": False,
+            "provider": "github",
+            "repo": repo,
+            "branch": branch,
+            "base_branch": base_branch,
+            "message": "O nome da branch solicitado não é seguro.",
+        }
+
+    if not token or not repo:
+        return {
+            "handled": True,
+            "success": False,
+            "provider": "github",
+            "message": "GitHub capability não está habilitada no ambiente.",
+        }
+
+    ref_url = f"https://api.github.com/repos/{repo}/git/ref/heads/{base_branch}"
+    status_ref, body_ref = _github_api_json("GET", ref_url, None)
+    if status_ref != 200:
+        return {
+            "handled": True,
+            "success": False,
+            "provider": "github",
+            "repo": repo,
+            "branch": base_branch,
+            "message": f"Não foi possível localizar a branch base '{base_branch}' no repositório configurado.",
+        }
+
+    try:
+        base_sha = (((body_ref or {}).get("object") or {}).get("sha") or "").strip()
+    except Exception:
+        base_sha = ""
+    if not base_sha:
+        return {
+            "handled": True,
+            "success": False,
+            "provider": "github",
+            "repo": repo,
+            "branch": base_branch,
+            "message": "Não foi possível resolver o SHA da branch base para criar a nova branch.",
+        }
+
+    exists_url = f"https://api.github.com/repos/{repo}/git/ref/heads/{branch}"
+    status_exists, body_exists = _github_api_json("GET", exists_url, None)
+    if status_exists == 200:
+        existing_sha = ((((body_exists or {}).get("object") or {}).get("sha") or "").strip()) or base_sha
+        return {
+            "handled": True,
+            "success": False,
+            "provider": "github",
+            "repo": repo,
+            "branch": branch,
+            "base_branch": base_branch,
+            "commit_sha": existing_sha,
+            "message": f"A branch '{branch}' já existe no repositório configurado.",
+        }
+
+    create_url = f"https://api.github.com/repos/{repo}/git/refs"
+    payload = {
+        "ref": f"refs/heads/{branch}",
+        "sha": base_sha,
+    }
+    _github_log("GITHUB_BRANCH_ATTEMPT", repo=repo, branch=branch, base_branch=base_branch, base_sha=base_sha, trace_id=trace_id or "")
+    status_create, body_create = _github_api_json("POST", create_url, payload)
+    if status_create not in (200, 201):
+        _github_log("GITHUB_BRANCH_FAILED", repo=repo, branch=branch, status=status_create, trace_id=trace_id or "")
+        return {
+            "handled": True,
+            "success": False,
+            "provider": "github",
+            "repo": repo,
+            "branch": branch,
+            "base_branch": base_branch,
+            "commit_sha": base_sha,
+            "message": (body_create.get("message") if isinstance(body_create, dict) else None) or f"Falha ao criar a branch '{branch}' no GitHub.",
+        }
+
+    verified = False
+    verified_ref = ""
+    verify_body: Dict[str, Any] = {}
+    for _ in range(3):
+        verified, verified_ref, verify_body = _github_verify_branch_exists(repo, branch)
+        if verified:
+            break
+        try:
+            time.sleep(0.35)
+        except Exception:
+            pass
+
+    created_sha = ((((verify_body or {}).get("object") or {}).get("sha") or "").strip()) or base_sha
+
+    if not verified:
+        _github_log("GITHUB_BRANCH_VERIFY_FAILED", repo=repo, branch=branch, base_branch=base_branch, trace_id=trace_id or "")
+        return {
+            "handled": True,
+            "success": False,
+            "provider": "github",
+            "repo": repo,
+            "branch": branch,
+            "base_branch": base_branch,
+            "commit_sha": created_sha,
+            "trace_id": trace_id,
+            "message": f"Solicitação enviada ao GitHub, mas sem confirmação verificável de criação da branch '{branch}'.",
+        }
+
+    _github_log("GITHUB_BRANCH_VERIFY_OK", repo=repo, branch=branch, base_branch=base_branch, sha=created_sha, trace_id=trace_id or "")
+    return {
+        "handled": True,
+        "success": True,
+        "provider": "github",
+        "event": "GITHUB_BRANCH_VERIFY_OK",
+        "repo": repo,
+        "branch": branch,
+        "base_branch": base_branch,
+        "verified_ref": verified_ref or f"refs/heads/{branch}",
+        "commit_sha": created_sha,
+        "trace_id": trace_id,
+        "message": "Branch criada com confirmação operacional verificável.",
+    }
+
+
+def _github_generated_branch_name(prefix: str = "sandbox/sanity") -> str:
+    safe_prefix = re.sub(r"[^A-Za-z0-9._/\-]+", "-", (prefix or "sandbox/sanity")).strip("-/")
+    if not safe_prefix:
+        safe_prefix = "sandbox/sanity"
+    ts = int(time.time())
+    rand = uuid.uuid4().hex[:8]
+    return f"{safe_prefix}-{ts}-{rand}"
 
 
 _GITHUB_READ_FILE_MAX_CHARS = 12000
