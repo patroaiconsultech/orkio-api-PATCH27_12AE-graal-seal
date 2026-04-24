@@ -6812,10 +6812,13 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
         parts.append(f"branch: {branch}")
 
     base_branch = (result.get("base_branch") or "").strip()
+    verified_ref = (result.get("verified_ref") or result.get("ref") or "").strip()
     if path:
         parts.append(f"path: {path}")
     if base_branch:
         parts.append(f"base_branch: {base_branch}")
+    if verified_ref:
+        parts.append(f"verified_ref: {verified_ref}")
 
     size_bytes = result.get("size_bytes")
     sha = (result.get("sha") or "").strip()
@@ -8371,6 +8374,100 @@ def _should_execute_runtime_from_enrichment(runtime_enrichment: Optional[Dict[st
     return bool(intent_package.get("requires_runtime_execution"))
 
 
+
+
+def _dispatch_governed_github_write(
+    *,
+    org: str,
+    thread_id: Optional[str],
+    payload: Optional[Dict[str, Any]],
+    user_text: str,
+    db: Optional[Session] = None,
+    trace_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Resolve governed GitHub write requests for chat/chat_stream.
+
+    Returns:
+      {"text": Optional[str], "execution_result": Optional[Dict[str, Any]]}
+
+    Branch creation is executed here as a structured runtime result so the truthful
+    execution guard can preserve provider-confirmed outcomes instead of downgrading
+    them to generic inventory text.
+    """
+    snapshot = _github_write_policy_snapshot(org=org, thread_id=thread_id, payload=payload, db=db)
+    auth_flags = _github_write_authorization_flags(user_text)
+    req_flags = _github_write_request_flags(user_text)
+
+    # Authorizations / revocations / pure policy lookups remain textual.
+    if auth_flags.get("deny_execution") or auth_flags.get("grant") or not req_flags.get("requested"):
+        return {
+            "text": _build_github_write_response_text(
+                org=org,
+                thread_id=thread_id,
+                payload=payload,
+                user_text=user_text,
+                db=db,
+            ),
+            "execution_result": None,
+        }
+
+    # For non-branch GitHub write requests, preserve the existing governed text flow.
+    if not req_flags.get("create_branch"):
+        return {
+            "text": _build_github_write_response_text(
+                org=org,
+                thread_id=thread_id,
+                payload=payload,
+                user_text=user_text,
+                db=db,
+            ),
+            "execution_result": None,
+        }
+
+    approval = snapshot.get("active_approval") if isinstance(snapshot.get("active_approval"), dict) else {}
+    if not approval:
+        return {"text": "SEM AUTORIZAÇÃO DE ESCRITA.", "execution_result": None}
+
+    if not bool(snapshot.get("write_enabled")):
+        return {
+            "text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: escrita_github_desabilitada",
+            "execution_result": None,
+        }
+
+    allowed_actions = list(approval.get("actions_allowed") or [])
+    if "create_branch" not in allowed_actions:
+        return {
+            "text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: create_branch_sem_autorização_explícita",
+            "execution_result": None,
+        }
+
+    branch_req = _extract_github_create_branch_request(user_text) or {}
+    if branch_req.get("invalid"):
+        return {
+            "text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: nome_de_branch_inseguro",
+            "execution_result": None,
+        }
+
+    branch_name = str(branch_req.get("branch") or "").strip() or _github_generated_branch_name("sandbox/sanity")
+    result = _github_create_branch_capability(
+        branch=branch_name,
+        trace_id=(trace_id or str(approval.get("approval_id") or "")),
+    )
+    if isinstance(result, dict) and result.get("handled"):
+        return {"text": None, "execution_result": result}
+
+    return {
+        "text": "Não foi possível concluir a ação GitHub solicitada.",
+        "execution_result": {
+            "handled": True,
+            "success": False,
+            "provider": "github",
+            "branch": branch_name,
+            "message": "Não foi possível concluir a ação GitHub solicitada.",
+        },
+    }
+
 def _execute_capability_if_authorized(
     user_text: str,
     *,
@@ -8804,13 +8901,16 @@ def chat(
         if blocked_reply is None:
             try:
                 if _is_github_write_request_or_authorization(inp.message):
-                    capability_inventory_answer = _build_github_write_response_text(
+                    governed_dispatch = _dispatch_governed_github_write(
                         org=org,
                         thread_id=getattr(inp, "thread_id", None),
                         payload=user,
                         user_text=inp.message,
                         db=db,
+                        trace_id=getattr(inp, "trace_id", None),
                     )
+                    capability_inventory_answer = governed_dispatch.get("text")
+                    execution_result = governed_dispatch.get("execution_result") if isinstance(governed_dispatch, dict) else None
                 elif _is_runtime_source_audit_request(inp.message):
                     capability_inventory_answer = _build_runtime_source_audit_text(
                         db=db,
@@ -12394,13 +12494,16 @@ async def chat_stream(
                 if blocked_reply is None:
                     try:
                         if force_governed_branch_dispatch or _is_github_write_request_or_authorization(message):
-                            capability_inventory_answer = _build_github_write_response_text(
+                            governed_dispatch = _dispatch_governed_github_write(
                                 org=org,
                                 thread_id=tid,
                                 payload=user,
                                 user_text=message,
                                 db=db,
+                                trace_id=trace_id,
                             )
+                            capability_inventory_answer = governed_dispatch.get("text")
+                            execution_result = governed_dispatch.get("execution_result") if isinstance(governed_dispatch, dict) else None
                         elif _is_runtime_source_audit_request(message):
                             capability_inventory_answer = _build_runtime_source_audit_text(
                                 db=db,
