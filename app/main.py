@@ -38,7 +38,7 @@ from .numerology.schemas import NumerologyProfileIn, NumerologyProfileOut
 from .numerology.engine import generate_numerology_profile
 from .routes.user import router as user_router
 from .routes.internal.manus_internal import router as manus_internal_router
-from .routes.internal.orion_internal import router as orion_internal_router, OrionExecuteIn, orion_github_execute, platform_self_audit, runtime_scan as orion_runtime_scan, repo_structure_scan as orion_repo_structure_scan, security_scan as orion_security_scan, safe_patch_plan as orion_safe_patch_plan
+from .routes.internal.orion_internal import router as orion_internal_router, OrionExecuteIn, orion_github_execute, orion_runtime_execute_alias
 from .routes.internal.git_internal import router as git_internal_router
 from .routes.internal.evolution_internal import router as evolution_internal_router
 from .routes.internal.evolution_trigger import router as evolution_trigger_router, maybe_trigger_schema_patch
@@ -7068,6 +7068,11 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     risk_points = result.get("risk_points") if isinstance(result.get("risk_points"), list) else None
     architecture_notes = result.get("architecture_notes") if isinstance(result.get("architecture_notes"), list) else None
     remediation_plan = result.get("remediation_plan") if isinstance(result.get("remediation_plan"), list) else None
+    facts_observed = result.get("facts_observed") if isinstance(result.get("facts_observed"), list) else None
+    evidence_points = result.get("evidence_points") if isinstance(result.get("evidence_points"), list) else None
+    inferences = result.get("inferences") if isinstance(result.get("inferences"), list) else None
+    fragile_areas = result.get("fragile_areas") if isinstance(result.get("fragile_areas"), list) else None
+    corrected_areas = result.get("corrected_areas") if isinstance(result.get("corrected_areas"), list) else None
     total_entries = result.get("total_entries")
     dirs = result.get("dirs") if isinstance(result.get("dirs"), list) else None
     confidence = result.get("confidence")
@@ -7226,6 +7231,26 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     if architecture_notes:
         parts.append("architecture_notes:")
         parts.extend(f"- {str(item)}" for item in architecture_notes[:50])
+
+    if facts_observed:
+        parts.append("facts_observed:")
+        parts.extend(f"- {str(item)}" for item in facts_observed[:50])
+
+    if evidence_points:
+        parts.append("evidence_points:")
+        parts.extend(f"- {str(item)}" for item in evidence_points[:50])
+
+    if inferences:
+        parts.append("inferences:")
+        parts.extend(f"- {str(item)}" for item in inferences[:50])
+
+    if fragile_areas:
+        parts.append("fragile_areas:")
+        parts.extend(f"- {str(item)}" for item in fragile_areas[:50])
+
+    if corrected_areas:
+        parts.append("corrected_areas:")
+        parts.extend(f"- {str(item)}" for item in corrected_areas[:50])
 
     if remediation_plan:
         parts.append("remediation_plan:")
@@ -8564,9 +8589,12 @@ def _github_create_pull_request_capability(*, head: str, base: str, title: str, 
 def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, Any]:
     data = dict(raw or {})
     ok = bool(data.get("ok"))
+    mode = str(data.get("mode") or "").strip()
+    event = str(data.get("event") or "").strip()
+    inferred_provider = "platform" if mode.startswith("platform_") or event.startswith("PLATFORM_") else "github"
+    provider = str(data.get("provider") or inferred_provider).strip() or inferred_provider
     backend_repo = str(data.get("backend_repo") or "").strip()
     frontend_repo = str(data.get("frontend_repo") or "").strip()
-    provider = str(data.get("provider") or data.get("service") or "github").strip()
     repo = str(data.get("repo") or backend_repo or _clean_env(os.getenv("GITHUB_REPO", ""))).strip()
     branch = str(data.get("branch") or data.get("default_branch") or "").strip()
     base_branch = str(data.get("base_branch") or data.get("default_branch") or "").strip()
@@ -8600,6 +8628,16 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         normalized["backend_root_entries"] = list(data.get("backend_root_entries") or [])
     if isinstance(data.get("frontend_root_entries"), list):
         normalized["frontend_root_entries"] = list(data.get("frontend_root_entries") or [])
+    if isinstance(data.get("facts_observed"), list):
+        normalized["facts_observed"] = list(data.get("facts_observed") or [])
+    if isinstance(data.get("evidence_points"), list):
+        normalized["evidence_points"] = list(data.get("evidence_points") or [])
+    if isinstance(data.get("inferences"), list):
+        normalized["inferences"] = list(data.get("inferences") or [])
+    if isinstance(data.get("fragile_areas"), list):
+        normalized["fragile_areas"] = list(data.get("fragile_areas") or [])
+    if isinstance(data.get("corrected_areas"), list):
+        normalized["corrected_areas"] = list(data.get("corrected_areas") or [])
 
     commit = data.get("commit") if isinstance(data.get("commit"), dict) else {}
     if commit:
@@ -8613,62 +8651,6 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
 
     if data.get("content") is not None:
         normalized["content"] = str(data.get("content") or "")
-
-    if data.get("status") is not None:
-        normalized["status"] = str(data.get("status") or "").strip()
-    if data.get("scope") is not None:
-        normalized["scope"] = str(data.get("scope") or "").strip()
-    if data.get("technical_summary") is not None:
-        normalized["technical_summary"] = str(data.get("technical_summary") or "").strip()
-    for field in (
-        "findings",
-        "risks",
-        "suggested_actions",
-        "key_files",
-        "key_functions",
-        "related_modules",
-        "risk_points",
-        "architecture_notes",
-        "remediation_plan",
-        "repository_details",
-        "backend_root_entries",
-        "frontend_root_entries",
-        "branches",
-        "files",
-        "dirs",
-        "files_read",
-        "missing_files",
-        "excerpts",
-        "snippets",
-    ):
-        if isinstance(data.get(field), list):
-            normalized[field] = list(data.get(field) or [])
-    if isinstance(data.get("audit_plan"), dict):
-        normalized["technical_summary"] = normalized.get("technical_summary") or "Auditoria consultiva preparada com evidências de runtime."
-        normalized["scope"] = normalized.get("scope") or str(data.get("scope") or "").strip()
-        if not normalized.get("findings"):
-            normalized["findings"] = [
-                {"severity": "MÉDIO", "title": "audit_plan_ready", "detail": "Plano de auditoria consultiva disponível para consolidação."}
-            ]
-        audit_plan = data.get("audit_plan") or {}
-        specialists = audit_plan.get("specialists") if isinstance(audit_plan.get("specialists"), list) else []
-        scans = audit_plan.get("scans") if isinstance(audit_plan.get("scans"), list) else []
-        evidence = audit_plan.get("evidence") if isinstance(audit_plan.get("evidence"), list) else []
-        if specialists:
-            normalized["related_modules"] = [
-                f"{str(item.get('agent') or '').strip()}: {str(item.get('deliverable') or '').strip()}"
-                for item in specialists if isinstance(item, dict)
-            ]
-        if scans:
-            normalized["architecture_notes"] = list(normalized.get("architecture_notes") or []) + [
-                f"{str(item.get('category') or '').strip()}: {str(item.get('description') or '').strip()}"
-                for item in scans if isinstance(item, dict)
-            ]
-        if evidence:
-            normalized["risk_points"] = list(normalized.get("risk_points") or []) + [
-                f"{str(item.get('fact') or '').strip()}={str(item.get('value'))}"
-                for item in evidence if isinstance(item, dict)
-            ]
 
     if isinstance(data.get("items"), list):
         normalized["items"] = data.get("items") or []
@@ -8918,37 +8900,16 @@ def _execute_capability_if_authorized(
     planner_snapshot = (runtime_enrichment or {}).get("planner_snapshot") or {}
     required_capability = str(planner_snapshot.get("requires_capability") or "").strip()
 
-    consultive_dispatch = {
-        "platform_audit": lambda: platform_self_audit(OrionExecuteIn(message=txt, prepare_only=True)),
-        "runtime_scan": lambda: orion_runtime_scan(OrionExecuteIn(message=txt, prepare_only=True)),
-        "repo_scan": lambda: orion_repo_structure_scan(OrionExecuteIn(message=txt, prepare_only=True)),
-        "security_scan": lambda: orion_security_scan(OrionExecuteIn(message=txt, prepare_only=True)),
-        "patch_plan": lambda: orion_safe_patch_plan(OrionExecuteIn(message=txt, prepare_only=True)),
-    }
-    if runtime_kind in consultive_dispatch:
-        try:
-            result = consultive_dispatch[runtime_kind]()
-            if isinstance(result, dict):
-                return _normalize_orion_runtime_execution_result(result)
-        except Exception:
-            logging.exception("PLATFORM_RUNTIME_UNEXPECTED_EXCEPTION trace_id=%s kind=%s", trace_id, runtime_kind)
-            return {
-                "handled": True,
-                "success": False,
-                "provider": "platform",
-                "mode": runtime_kind,
-                "message": "Falha ao avaliar capability consultiva solicitada.",
-            }
-
-    allow_github_runtime = (
+    allow_runtime_execution = (
         runtime_kind.startswith("github_runtime_")
         or required_capability.startswith("github_")
+        or runtime_kind in {"platform_audit", "runtime_scan", "repo_scan", "security_scan", "patch_plan", "squad_list"}
     )
-    if not allow_github_runtime:
+    if not allow_runtime_execution:
         return None
 
     try:
-        orion_result = orion_github_execute(OrionExecuteIn(message=txt))
+        orion_result = orion_runtime_execute_alias(OrionExecuteIn(message=txt))
         if isinstance(orion_result, dict):
             return _normalize_orion_runtime_execution_result(orion_result)
     except HTTPException as e:
@@ -8963,15 +8924,15 @@ def _execute_capability_if_authorized(
             ).strip()
         else:
             message = str(detail or "").strip()
-        logging.exception("GITHUB_RUNTIME_HTTP_EXCEPTION trace_id=%s", trace_id)
+        logging.exception("RUNTIME_EXECUTION_HTTP_EXCEPTION trace_id=%s", trace_id)
         return {
             "handled": True,
             "success": False,
-            "provider": "github",
+            "provider": "runtime",
             "message": message or "Falha ao avaliar capability operacional solicitada.",
         }
     except Exception:
-        logging.exception("GITHUB_RUNTIME_UNEXPECTED_EXCEPTION trace_id=%s", trace_id)
+        logging.exception("RUNTIME_EXECUTION_UNEXPECTED_EXCEPTION trace_id=%s", trace_id)
         return {
             "handled": True,
             "success": False,
@@ -9352,27 +9313,9 @@ def chat(
         execution_result = None
         capability_inventory_answer = None
         should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
-        runtime_kind = (
-            ((runtime_enrichment or {}).get("intent_package") or {})
-            .get("runtime_operation", {})
-            .get("kind", "")
-        )
-        consultive_runtime_priority = runtime_kind in {
-            "platform_audit",
-            "runtime_scan",
-            "repo_scan",
-            "security_scan",
-            "patch_plan",
-        }
         if blocked_reply is None:
             try:
-                if consultive_runtime_priority and should_execute_runtime:
-                    execution_result = _execute_capability_if_authorized(
-                        inp.message,
-                        trace_id=getattr(inp, "trace_id", None),
-                        runtime_enrichment=runtime_enrichment,
-                    )
-                elif _is_explicit_github_create_branch_command(inp.message) or _is_github_write_request_or_authorization(inp.message):
+                if _is_explicit_github_create_branch_command(inp.message) or _is_github_write_request_or_authorization(inp.message):
                     governed_dispatch = _dispatch_governed_github_write(
                         org=org,
                         thread_id=getattr(inp, "thread_id", None),
