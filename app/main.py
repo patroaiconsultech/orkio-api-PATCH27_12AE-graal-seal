@@ -9230,41 +9230,32 @@ def _apply_truthful_execution_mode(answer: str, execution_result: Optional[Dict[
     )
 
 
-def _normalize_echo_text(value: str) -> str:
+def _normalize_chat_text(value: str) -> str:
     txt = (value or "").strip().lower()
     if not txt:
         return ""
-    try:
-        txt = re.sub(r"@[A-Za-z0-9_\-]{2,64}", " ", txt)
-        txt = re.sub(r"[^0-9a-zà-ÿ]+", " ", txt, flags=re.IGNORECASE)
-        txt = re.sub(r"\s+", " ", txt).strip()
-    except Exception:
-        txt = " ".join((value or "").strip().lower().split())
-    return txt
-
+    txt = re.sub(r"```.*?```", " ", txt, flags=re.DOTALL)
+    txt = re.sub(r"`+", " ", txt)
+    txt = re.sub(r"[@#*_>\-]+", " ", txt)
+    txt = re.sub(r"\s+", " ", txt)
+    return txt.strip()
 
 def _looks_like_user_instruction_echo(answer: str, user_message: str) -> bool:
-    a = _normalize_echo_text(answer)
-    u = _normalize_echo_text(user_message)
-    if not a or not u:
+    ans = _normalize_chat_text(answer)
+    usr = _normalize_chat_text(user_message)
+    if not ans or not usr:
         return False
-    if a == u:
+    if ans == usr:
         return True
-    if len(a) >= max(24, int(len(u) * 0.9)) and (a.startswith(u) or u.startswith(a)):
+    if len(usr) >= 40 and (ans.startswith(usr) or usr.startswith(ans)):
         return True
-    user_tokens = [tok for tok in u.split() if len(tok) > 2]
-    if len(user_tokens) >= 6:
-        hits = sum(1 for tok in user_tokens if tok in a)
-        if hits / max(len(user_tokens), 1) >= 0.9:
-            return True
+    if len(usr) >= 60 and usr in ans:
+        return True
     return False
 
-
-def _apply_chat_anti_echo(answer: str, user_message: str, execution_result: Optional[Dict[str, Any]] = None) -> str:
+def _apply_chat_anti_echo(answer: str, user_message: str) -> str:
     txt = (answer or "").strip()
     if not txt:
-        return txt
-    if execution_result and bool(execution_result.get("success")):
         return txt
     if not _looks_like_user_instruction_echo(txt, user_message):
         return txt
@@ -9273,43 +9264,33 @@ def _apply_chat_anti_echo(answer: str, user_message: str, execution_result: Opti
         "Nenhuma ação externa foi assumida como concluída."
     )
 
-
-def _pick_runtime_primary_agent(target_agents: List[Any], requested_names: Optional[List[str]] = None) -> Any:
-    agents = list(target_agents or [])
-    if not agents:
+def _pick_runtime_primary_agent(target_agents: List[Any], requested_names: Optional[List[str]] = None) -> Optional[Any]:
+    if not target_agents:
         return None
 
     requested_norm = [str(x).strip().lower() for x in (requested_names or []) if str(x).strip()]
-    preferred: List[str] = []
-    for name in ["orion", "orkio", "chris"]:
-        if name in requested_norm and name not in preferred:
-            preferred.append(name)
-    for name in requested_norm:
-        if name not in preferred:
-            preferred.append(name)
 
-    def _agent_tokens(ag: Any) -> List[str]:
+    def _agent_name(ag: Any) -> str:
         if isinstance(ag, dict):
-            raw = str(ag.get("name") or "").strip().lower()
-        else:
-            raw = str(getattr(ag, "name", "") or "").strip().lower()
-        if not raw:
-            return []
-        first = raw.split()[0] if raw.split() else raw
-        return list(dict.fromkeys([raw, first]))
+            return str(ag.get("name") or "").strip().lower()
+        return str(getattr(ag, "name", "") or "").strip().lower()
 
-    for pref in preferred:
-        for ag in agents:
-            if pref in _agent_tokens(ag):
+    for req in requested_norm:
+        for ag in target_agents:
+            name = _agent_name(ag)
+            first = name.split()[0] if name else ""
+            if req == name or req == first:
                 return ag
-    return agents[0]
 
+    preferred = ("orion", "orkio", "chris")
+    for pref in preferred:
+        for ag in target_agents:
+            name = _agent_name(ag)
+            first = name.split()[0] if name else ""
+            if pref == name or pref == first:
+                return ag
 
-def _chat_runtime_hints_payload(db: Session, org: str, runtime_enrichment: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    rh = runtime_enrichment.get("runtime_hints") if isinstance(runtime_enrichment, dict) else None
-    if isinstance(rh, dict):
-        return dict(rh, capabilities=_get_runtime_capability_registry(db=db, org=org))
-    return {"capabilities": _get_runtime_capability_registry(db=db, org=org)}
+    return target_agents[0]
 
 def _track_execution_event(
     db: Session,
@@ -9538,216 +9519,27 @@ def chat(
     except Exception:
         pass
 
+    # PATCH27_12AJ — execution-first collapse for sync chat
     should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
-    runtime_primary_agent = _pick_runtime_primary_agent(target_agents, requested_names)
-    if should_execute_runtime and runtime_primary_agent is not None:
-        target_agents = [runtime_primary_agent]
-
-    if blocked_reply is None and should_execute_runtime:
-        capability_inventory_answer = None
-        execution_result = None
+    runtime_primary_agent = None
+    if should_execute_runtime:
         try:
-            if _is_explicit_github_create_branch_command(inp.message) or _is_github_write_request_or_authorization(inp.message):
-                governed_dispatch = _dispatch_governed_github_write(
-                    org=org,
-                    thread_id=getattr(inp, "thread_id", None),
-                    payload=user,
-                    user_text=inp.message,
-                    db=db,
-                    trace_id=getattr(inp, "trace_id", None),
-                )
-                capability_inventory_answer = governed_dispatch.get("text")
-                execution_result = governed_dispatch.get("execution_result") if isinstance(governed_dispatch, dict) else None
-            elif _is_runtime_source_audit_request(inp.message):
-                capability_inventory_answer = _build_runtime_source_audit_text(
-                    db=db,
-                    org=org,
-                    privileged=_payload_has_catalog_privileged_access(user),
-                )
-            else:
-                hidden_catalog_flags = _hidden_catalog_request_flags(inp.message)
-                if hidden_catalog_flags.get("requested"):
-                    capability_inventory_answer = _build_capability_inventory_text(
-                        db=db,
-                        org=org,
-                        include_hidden=True,
-                        privileged=_payload_has_catalog_privileged_access(user),
-                        only_hidden=bool(hidden_catalog_flags.get("only_hidden")),
-                        only_technical=bool(hidden_catalog_flags.get("only_technical")),
-                    )
-                elif _is_github_access_request(inp.message):
-                    capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
-                elif _is_capability_inventory_request(inp.message):
-                    capability_inventory_answer = _build_capability_inventory_text(db=db, org=org)
-                else:
-                    execution_result = _execute_capability_if_authorized(
-                        inp.message,
-                        trace_id=getattr(inp, "trace_id", None),
-                        runtime_enrichment=runtime_enrichment,
-                    )
+            runtime_primary_agent = _pick_runtime_primary_agent(target_agents, requested_names)
         except Exception:
-            execution_result = {
-                "handled": True,
-                "success": False,
-                "provider": "runtime",
-                "message": "Falha ao avaliar capability operacional solicitada.",
-            }
-
-        if capability_inventory_answer is not None or (execution_result and execution_result.get("handled")):
-            primary_agent = runtime_primary_agent
-            primary_user_msg = _build_agent_prompt(primary_agent, inp.message, has_team, mention_tokens)
-            ans_obj = (
-                {
-                    "text": capability_inventory_answer,
-                    "usage": None,
-                    "model": "runtime_capability_inventory",
-                }
-                if capability_inventory_answer is not None
-                else {
-                    "text": _build_execution_result_payload(execution_result),
-                    "usage": None,
-                    "model": "runtime_execution",
-                }
-            )
-
-            answer = blocked_reply or (ans_obj.get("text") if ans_obj else None)
-            answer = _apply_truthful_execution_mode(answer or "", execution_result=execution_result)
-            answer = _apply_chat_anti_echo(answer or "", inp.message, execution_result=execution_result)
-
-            if not answer:
-                answer = (
-                    "Recebi a instrução, mas ainda não obtive uma saída operacional confirmada para registrar como execução concluída."
-                )
-
-            m_ass = Message(
-                id=new_id(),
-                org_slug=org,
-                thread_id=tid,
-                role="assistant",
-                content=answer,
-                agent_id=(primary_agent.id if primary_agent else None),
-                agent_name=(primary_agent.name if primary_agent else None),
-                created_at=now_ts(),
-            )
-            db.add(m_ass)
-            db.commit()
-            try:
-                audit(
-                    db,
-                    org,
-                    user.get('sub'),
-                    'chat.message.generated',
-                    request_id='chat',
-                    path='/api/chat',
-                    status_code=200,
-                    latency_ms=0,
-                    meta={'thread_id': tid, 'agent_id': (primary_agent.id if primary_agent else None), 'execution_first': True},
-                )
-            except Exception:
-                pass
-
-            _trace = getattr(inp, "trace_id", None) or ""
-            logger.info(
-                "runtime_chat_execution_first trace_id=%s org=%s thread=%s agent=%s chars=%d",
-                _trace,
-                org,
-                tid,
-                (primary_agent.name if primary_agent else "none"),
-                len(answer),
-            )
-
-            tracked_total_usd = _track_cost(
-                db,
-                org,
-                uid,
-                tid,
-                m_ass.id,
-                primary_agent,
-                ans_obj,
-                primary_user_msg,
-                answer,
-                streaming=False,
-            )
-            try:
-                _wallet_debit_for_chat_usage(
-                    db,
-                    org,
-                    user,
-                    amount_usd=tracked_total_usd,
-                    route="/api/chat",
-                    action_key=f"chat:{m_ass.id}",
-                    thread_id=tid,
-                    message_id=m_ass.id,
-                    agent_id=(primary_agent.id if primary_agent else None),
-                    usage_meta={
-                        "client_message_id": getattr(inp, "client_message_id", None),
-                        "streaming": False,
-                        "execution_first": True,
-                    },
-                )
-            except HTTPException:
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-                raise
-            except Exception:
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-                logger.exception("WALLET_DEBIT_CHAT_FAILED")
-
-            try:
-                _persist_runtime_candidates(
-                    db,
-                    org,
-                    uid,
-                    tid,
-                    inp.message,
-                    runtime_enrichment.get("intent_package"),
-                    runtime_enrichment.get("first_win_plan"),
-                )
-                _persist_trial_state(
-                    db,
-                    org,
-                    uid,
-                    runtime_enrichment.get("runtime_hints"),
-                    runtime_enrichment.get("trial_hints"),
-                    tid=tid,
-                    analytics=runtime_enrichment.get("trial_analytics"),
-                )
-            except Exception:
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-
-            try:
-                audit(
-                    db,
-                    org,
-                    uid,
-                    'cost.event.recorded',
-                    request_id='cost',
-                    path='/api/chat',
-                    status_code=200,
-                    latency_ms=0,
-                    meta={"thread_id": tid, "agent_id": (primary_agent.id if primary_agent else None), "execution_first": True},
-                )
-            except Exception:
-                logger.exception("AUDIT_COST_FAILED")
-
-            return {
-                "thread_id": tid,
-                "answer": answer,
-                "citations": [],
-                "agent_id": primary_agent.id if primary_agent else None,
-                "agent_name": primary_agent.name if primary_agent else None,
-                "voice_id": resolve_agent_voice(primary_agent) if primary_agent else None,
-                "avatar_url": getattr(primary_agent, 'avatar_url', None) if primary_agent else None,
-                "runtime_hints": _chat_runtime_hints_payload(db=db, org=org, runtime_enrichment=runtime_enrichment),
-            }
+            runtime_primary_agent = None
+        if runtime_primary_agent is not None:
+            target_agents = [runtime_primary_agent]
+        try:
+            dag_snapshot_live = runtime_enrichment.get("dag_snapshot") if isinstance(runtime_enrichment, dict) else {}
+            if isinstance(dag_snapshot_live, dict):
+                dag_snapshot_live["runtime_execution_first"] = True
+                dag_snapshot_live["routing_mode"] = "single"
+                if runtime_primary_agent is not None:
+                    dag_snapshot_live["runtime_primary_agent_id"] = getattr(runtime_primary_agent, "id", None)
+                    dag_snapshot_live["runtime_primary_agent_name"] = getattr(runtime_primary_agent, "name", None)
+                runtime_enrichment["dag_snapshot"] = dag_snapshot_live
+        except Exception:
+            pass
 
     for agent in target_agents:
 
@@ -9813,7 +9605,7 @@ def chat(
 
         execution_result = None
         capability_inventory_answer = None
-        should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
+        # PATCH27_12AJ — should_execute_runtime decidido antes do loop
         if blocked_reply is None:
             try:
                 if _is_explicit_github_create_branch_command(inp.message) or _is_github_write_request_or_authorization(inp.message):
@@ -9886,7 +9678,7 @@ def chat(
         answer = blocked_reply or (ans_obj.get("text") if ans_obj else None)
 
         answer = _apply_truthful_execution_mode(answer or "", execution_result=execution_result)
-        answer = _apply_chat_anti_echo(answer or "", inp.message, execution_result=execution_result)
+        answer = _apply_chat_anti_echo(answer or "", inp.message)
 
         if ans_obj and ans_obj.get("code") and not answer:
             # surface structured error
@@ -13198,6 +12990,31 @@ async def chat_stream(
     except Exception:
         pass
 
+    # PATCH27_12AK — execution-first collapse for SSE
+    should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
+    runtime_primary_agent = None
+
+    if should_execute_runtime:
+        try:
+            runtime_primary_agent = _pick_runtime_primary_agent(target_agents, requested_names)
+        except Exception:
+            runtime_primary_agent = None
+
+        if runtime_primary_agent is not None:
+            target_agents = [runtime_primary_agent]
+
+    try:
+        dag_snapshot_live = runtime_enrichment.get("dag_snapshot") if isinstance(runtime_enrichment, dict) else {}
+        if isinstance(dag_snapshot_live, dict):
+            dag_snapshot_live["runtime_execution_first"] = bool(should_execute_runtime)
+            dag_snapshot_live["routing_mode"] = "single" if len(target_agents) == 1 else dag_snapshot_live.get("routing_mode")
+            if runtime_primary_agent is not None:
+                dag_snapshot_live["runtime_primary_agent_id"] = runtime_primary_agent.get("id") if isinstance(runtime_primary_agent, dict) else getattr(runtime_primary_agent, "id", None)
+                dag_snapshot_live["runtime_primary_agent_name"] = runtime_primary_agent.get("name") if isinstance(runtime_primary_agent, dict) else getattr(runtime_primary_agent, "name", None)
+            runtime_enrichment["dag_snapshot"] = dag_snapshot_live
+    except Exception:
+        pass
+
     _stream_failed_nodes: List[str] = []
     _stream_executed_nodes: List[str] = []
     _stream_started_at = now_ts()
@@ -13398,7 +13215,7 @@ async def chat_stream(
 
                 execution_result = None
                 capability_inventory_answer = None
-                should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
+                # PATCH27_12AK — should_execute_runtime decidido antes do loop
                 force_governed_branch_dispatch = False
                 try:
                     _forced_branch_req = _extract_github_create_branch_request(message)
@@ -13655,7 +13472,33 @@ async def chat_stream(
                     continue
 
                 ans = _apply_truthful_execution_mode((ans_obj.get("text") or "").strip(), execution_result=execution_result)
-                ans = _apply_chat_anti_echo(ans or "", message, execution_result=execution_result)
+                ans = _apply_chat_anti_echo(ans, message)
+
+                # PATCH27_12AK — não persistir eco/fallback repetido por agente
+                if _looks_like_user_instruction_echo(ans, message) and not (execution_result and execution_result.get("success")):
+                    try:
+                        yield sse_execution(
+                            "assistant_skipped_echo",
+                            f"{ag_name} sem saída própria para persistir",
+                            kind="warning",
+                            scope="agent",
+                            agent_id=ag_id,
+                            agent_name=ag_name,
+                            started_monotonic=agent_started_monotonic,
+                            detail="Resposta eco/fallback descartada para evitar duplicação entre agentes.",
+                        )
+                        yield sse_event(
+                            "agent_done",
+                            {
+                                "done": True,
+                                "agent_id": ag_id,
+                                "agent_name": ag_name,
+                                "trace_id": trace_id,
+                            },
+                        )
+                    except Exception:
+                        return
+                    continue
 
                 # Persist assistant message (DB path can fail; must rollback)
                 try:
