@@ -9229,6 +9229,96 @@ def _apply_truthful_execution_mode(answer: str, execution_result: Optional[Dict[
         "de execução e retorno do provedor."
     )
 
+
+def _normalize_runtime_text_probe(raw: Optional[str]) -> str:
+    txt = (raw or "").strip().lower()
+    if not txt:
+        return ""
+    txt = re.sub(r"@([a-z0-9_\-]{2,64})", " ", txt, flags=re.IGNORECASE)
+    txt = re.sub(r"\b(orkio|orion|chris|daniel\s+graebin)\b", " ", txt, flags=re.IGNORECASE)
+    txt = re.sub(r"[^\w\sà-ÿ]", " ", txt, flags=re.IGNORECASE)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt
+
+
+def _looks_like_user_instruction_echo(
+    answer: Optional[str],
+    *,
+    user_text: Optional[str] = None,
+    delegation_prompt: Optional[str] = None,
+) -> bool:
+    ans = _normalize_runtime_text_probe(answer)
+    original = _normalize_runtime_text_probe(user_text)
+    if not ans or not original:
+        return False
+    if ans == original:
+        return True
+
+    try:
+        ratio = min(len(ans), len(original)) / max(len(ans), len(original))
+    except Exception:
+        ratio = 0.0
+
+    if ratio >= 0.92 and (ans in original or original in ans):
+        return True
+
+    if delegation_prompt:
+        try:
+            m = re.search(
+                r"CONTEXTO\s+ORIGINAL\s+DO\s+USU[ÁA]RIO:\s*(.+?)(?:\n\nResponda|$)",
+                delegation_prompt,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            delegated_original = _normalize_runtime_text_probe(m.group(1) if m else delegation_prompt)
+        except Exception:
+            delegated_original = _normalize_runtime_text_probe(delegation_prompt)
+        if delegated_original and ans == delegated_original:
+            return True
+
+    return False
+
+
+def _should_suppress_assistant_echo(
+    answer: Optional[str],
+    *,
+    user_text: Optional[str] = None,
+    delegation_prompt: Optional[str] = None,
+    execution_result: Optional[Dict[str, Any]] = None,
+) -> bool:
+    if execution_result and bool(execution_result.get("success")):
+        return False
+    return _looks_like_user_instruction_echo(
+        answer,
+        user_text=user_text,
+        delegation_prompt=delegation_prompt,
+    )
+
+
+def _collapse_runtime_dispatch_targets(
+    target_agents: List[Any],
+    runtime_enrichment: Optional[Dict[str, Any]],
+) -> List[Any]:
+    try:
+        if not _should_execute_runtime_from_enrichment(runtime_enrichment):
+            return target_agents
+        if not target_agents or len(target_agents) <= 1:
+            return target_agents
+
+        preferred_names = ("orion", "orkio")
+        for preferred in preferred_names:
+            for ag in target_agents:
+                name = (
+                    (ag.get("name") if isinstance(ag, dict) else getattr(ag, "name", None))
+                    or ""
+                ).strip().lower()
+                first = name.split()[0] if name.split() else name
+                if name == preferred or first == preferred:
+                    return [ag]
+
+        return [target_agents[0]]
+    except Exception:
+        return target_agents
+
 def _track_execution_event(
     db: Session,
     *,
@@ -9456,6 +9546,8 @@ def chat(
     except Exception:
         pass
 
+    target_agents = _collapse_runtime_dispatch_targets(target_agents, runtime_enrichment)
+
     for agent in target_agents:
 
         # PATCH0100_18: per-agent history in Team mode to avoid leaking other agents' answers
@@ -9593,6 +9685,17 @@ def chat(
         answer = blocked_reply or (ans_obj.get("text") if ans_obj else None)
 
         answer = _apply_truthful_execution_mode(answer or "", execution_result=execution_result)
+
+        if _should_suppress_assistant_echo(
+            answer,
+            user_text=inp.message,
+            delegation_prompt=user_msg,
+            execution_result=execution_result,
+        ):
+            answer = (
+                "Recebi a instrução, mas ainda não obtive uma saída real do agente para registrar sem eco da sua própria mensagem. "
+                "Nenhuma ação externa foi assumida como concluída."
+            )
 
         if ans_obj and ans_obj.get("code") and not answer:
             # surface structured error
@@ -12904,6 +13007,8 @@ async def chat_stream(
     except Exception:
         pass
 
+    target_agents = _collapse_runtime_dispatch_targets(target_agents, runtime_enrichment)
+
     _stream_failed_nodes: List[str] = []
     _stream_executed_nodes: List[str] = []
     _stream_started_at = now_ts()
@@ -13361,6 +13466,37 @@ async def chat_stream(
                     continue
 
                 ans = _apply_truthful_execution_mode((ans_obj.get("text") or "").strip(), execution_result=execution_result)
+
+                if _should_suppress_assistant_echo(
+                    ans,
+                    user_text=message,
+                    delegation_prompt=user_msg,
+                    execution_result=execution_result,
+                ):
+                    try:
+                        _ag_fail_name = str(ag_name or "").strip().lower()
+                        if _ag_fail_name and _ag_fail_name not in _stream_failed_nodes:
+                            _stream_failed_nodes.append(_ag_fail_name)
+                    except Exception:
+                        pass
+                    try:
+                        yield sse_execution(
+                            "assistant_echo_suppressed",
+                            f"{ag_name} teve a resposta suprimida por eco",
+                            kind="error",
+                            scope="agent",
+                            agent_id=ag_id,
+                            agent_name=ag_name,
+                            started_monotonic=agent_started_monotonic,
+                            detail="A saída coincidiu com a instrução original do usuário e não foi persistida para evitar duplicação no histórico.",
+                        )
+                        yield sse_event(
+                            "agent_done",
+                            {"done": True, "agent_id": ag_id, "agent_name": ag_name, "thread_id": tid, "trace_id": trace_id},
+                        )
+                    except Exception:
+                        return
+                    continue
 
                 # Persist assistant message (DB path can fail; must rollback)
                 try:
@@ -13971,6 +14107,19 @@ async def orchestrate(
                 continue
 
             ans = _apply_truthful_execution_mode((ans_obj.get("text") or "").strip(), execution_result=None)
+
+            if _should_suppress_assistant_echo(
+                ans,
+                user_text=message,
+                delegation_prompt=delegation_prompt,
+                execution_result=None,
+            ):
+                try:
+                    yield sse_event("error", {"agent_id": ag_id, "agent_name": ag_name, "message": "Echo suppressed", "trace_id": trace_id})
+                    yield sse_event("agent_done", {"done": True, "agent_id": ag_id, "agent_name": ag_name, "thread_id": tid, "trace_id": trace_id})
+                except Exception:
+                    return
+                continue
 
             # Persist
             try:
