@@ -7085,6 +7085,11 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     technical_debts_by_severity = result.get("technical_debts_by_severity") if isinstance(result.get("technical_debts_by_severity"), dict) else None
     maturity_conclusion = (result.get("maturity_conclusion") or "").strip()
     report_format = (result.get("report_format") or "").strip()
+    selected_specialists = result.get("selected_specialists") if isinstance(result.get("selected_specialists"), list) else None
+    dispatch_receipts = result.get("dispatch_receipts") if isinstance(result.get("dispatch_receipts"), list) else None
+    specialist_reports = result.get("specialist_reports") if isinstance(result.get("specialist_reports"), list) else None
+    final_consolidation = (result.get("final_consolidation") or "").strip()
+    execution_depth = (result.get("execution_depth") or "").strip()
     total_entries = result.get("total_entries")
     dirs = result.get("dirs") if isinstance(result.get("dirs"), list) else None
     confidence = result.get("confidence")
@@ -7119,6 +7124,8 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
             parts.append(f"confidence: {float(confidence):.2f}")
         except Exception:
             parts.append(f"confidence: {confidence}")
+    if execution_depth:
+        parts.append(f"execution_depth: {execution_depth}")
 
     if repository_details:
         parts.append("repository_details:")
@@ -7141,6 +7148,73 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     if technical_summary:
         parts.append("technical_summary:")
         parts.append(technical_summary)
+
+    if report_format == "dispatch_audit_v1" or event == "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED" or execution_depth == "dispatch":
+        if selected_specialists:
+            parts.append("selected_specialists:")
+            parts.extend(f"- {str(item)}" for item in selected_specialists[:20])
+
+        if dispatch_receipts:
+            parts.append("dispatch_receipts:")
+            for item in dispatch_receipts[:20]:
+                if not isinstance(item, dict):
+                    parts.append(f"- {str(item)}")
+                    continue
+                parts.append(
+                    "- agent: {agent} | status: {status} | mode: {mode} | deliverable: {deliverable}".format(
+                        agent=str(item.get("agent") or "").strip() or "unknown",
+                        status=str(item.get("status") or "").strip() or "n/d",
+                        mode=str(item.get("mode") or "").strip() or "n/d",
+                        deliverable=str(item.get("deliverable") or "").strip() or "n/d",
+                    )
+                )
+
+        if specialist_reports:
+            parts.append("specialist_reports:")
+            for item in specialist_reports[:20]:
+                if not isinstance(item, dict):
+                    parts.append(f"- {str(item)}")
+                    continue
+                agent_name = str(item.get("agent") or "").strip() or "unknown"
+                role_name = str(item.get("role") or "").strip()
+                focus_text = str(item.get("focus") or "").strip()
+                header = f"- {agent_name}"
+                if role_name:
+                    header += f" ({role_name})"
+                parts.append(header)
+                if focus_text:
+                    parts.append(f"  focus: {focus_text}")
+                findings_list = item.get("findings") if isinstance(item.get("findings"), list) else []
+                for finding in findings_list[:10]:
+                    parts.append(f"  finding: {str(finding)}")
+                next_actions_list = item.get("next_actions") if isinstance(item.get("next_actions"), list) else []
+                for action in next_actions_list[:10]:
+                    parts.append(f"  next_action: {str(action)}")
+
+        if final_consolidation:
+            parts.append("final_consolidation:")
+            parts.append(final_consolidation)
+
+        # suprime os blocos consultivos legados quando o retorno é de dispatch real
+        findings = None
+        risks = None
+        suggested_actions = None
+        facts_observed = None
+        evidence_points = None
+        inferences = None
+        fragile_areas = None
+        corrected_areas = None
+        root_causes = None
+        intent_misclassification_points = None
+        routing_error_points = None
+        execution_response_mismatches = None
+        agent_duplication_points = None
+        preserve_items = None
+        simplify_items = None
+        correction_order = None
+        specialist_views = None
+        technical_debts_by_severity = None
+        maturity_conclusion = ""
 
     if report_format == "full_audit_v1":
         parts.append("1. Fatos observados")
@@ -8745,6 +8819,16 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         normalized["fragile_areas"] = list(data.get("fragile_areas") or [])
     if isinstance(data.get("corrected_areas"), list):
         normalized["corrected_areas"] = list(data.get("corrected_areas") or [])
+    if isinstance(data.get("selected_specialists"), list):
+        normalized["selected_specialists"] = list(data.get("selected_specialists") or [])
+    if isinstance(data.get("dispatch_receipts"), list):
+        normalized["dispatch_receipts"] = list(data.get("dispatch_receipts") or [])
+    if isinstance(data.get("specialist_reports"), list):
+        normalized["specialist_reports"] = list(data.get("specialist_reports") or [])
+    if data.get("final_consolidation"):
+        normalized["final_consolidation"] = str(data.get("final_consolidation") or "").strip()
+    if data.get("execution_depth"):
+        normalized["execution_depth"] = str(data.get("execution_depth") or "").strip()
 
     commit = data.get("commit") if isinstance(data.get("commit"), dict) else {}
     if commit:
@@ -8999,9 +9083,11 @@ def _execute_capability_if_authorized(
     if not txt:
         return None
 
-    intent_package = ((runtime_enrichment or {}).get("intent_package") or {})
-    runtime_operation = intent_package.get("runtime_operation", {}) or {}
-    runtime_kind = str(runtime_operation.get("kind") or "").strip()
+    runtime_kind = (
+        ((runtime_enrichment or {}).get("intent_package") or {})
+        .get("runtime_operation", {})
+        .get("kind", "")
+    )
     planner_snapshot = (runtime_enrichment or {}).get("planner_snapshot") or {}
     required_capability = str(planner_snapshot.get("requires_capability") or "").strip()
 
@@ -9013,23 +9099,15 @@ def _execute_capability_if_authorized(
     if not allow_runtime_execution:
         return None
 
-    lowered_txt = txt.lower()
-    include_frontend = bool(runtime_operation.get("include_frontend", False)) or any(
-        term in lowered_txt
-        for term in (
-            "frontend",
-            "front-end",
-            "react",
-            "vite",
-            "web",
-            "ui",
-            "interface",
-            "appconsole",
-            "browser",
-        )
-    )
+    intent_package = ((runtime_enrichment or {}).get("intent_package") or {})
+    runtime_operation = intent_package.get("runtime_operation") if isinstance(intent_package.get("runtime_operation"), dict) else {}
     prepare_only = bool(
-        planner_snapshot.get("prepare_only", runtime_operation.get("prepare_only", False))
+        runtime_operation.get("prepare_only", planner_snapshot.get("prepare_only", False))
+    )
+    include_frontend = bool(
+        runtime_operation.get("include_frontend", False)
+        or planner_snapshot.get("audit_mode") == "specialist"
+        or runtime_operation.get("audit_mode") == "specialist"
     )
 
     try:
