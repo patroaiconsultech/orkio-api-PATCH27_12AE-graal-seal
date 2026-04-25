@@ -7073,6 +7073,18 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     inferences = result.get("inferences") if isinstance(result.get("inferences"), list) else None
     fragile_areas = result.get("fragile_areas") if isinstance(result.get("fragile_areas"), list) else None
     corrected_areas = result.get("corrected_areas") if isinstance(result.get("corrected_areas"), list) else None
+    root_causes = result.get("root_causes") if isinstance(result.get("root_causes"), list) else None
+    intent_misclassification_points = result.get("intent_misclassification_points") if isinstance(result.get("intent_misclassification_points"), list) else None
+    routing_error_points = result.get("routing_error_points") if isinstance(result.get("routing_error_points"), list) else None
+    execution_response_mismatches = result.get("execution_response_mismatches") if isinstance(result.get("execution_response_mismatches"), list) else None
+    agent_duplication_points = result.get("agent_duplication_points") if isinstance(result.get("agent_duplication_points"), list) else None
+    preserve_items = result.get("preserve_items") if isinstance(result.get("preserve_items"), list) else None
+    simplify_items = result.get("simplify_items") if isinstance(result.get("simplify_items"), list) else None
+    correction_order = result.get("correction_order") if isinstance(result.get("correction_order"), list) else None
+    specialist_views = result.get("specialist_views") if isinstance(result.get("specialist_views"), dict) else None
+    technical_debts_by_severity = result.get("technical_debts_by_severity") if isinstance(result.get("technical_debts_by_severity"), dict) else None
+    maturity_conclusion = (result.get("maturity_conclusion") or "").strip()
+    report_format = (result.get("report_format") or "").strip()
     total_entries = result.get("total_entries")
     dirs = result.get("dirs") if isinstance(result.get("dirs"), list) else None
     confidence = result.get("confidence")
@@ -7129,6 +7141,101 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     if technical_summary:
         parts.append("technical_summary:")
         parts.append(technical_summary)
+
+    if report_format == "full_audit_v1":
+        parts.append("1. Fatos observados")
+        for item in (facts_observed or []):
+            parts.append(f"- {str(item)}")
+
+        parts.append("2. Evidências técnicas concretas")
+        for item in (evidence_points or []):
+            parts.append(f"- {str(item)}")
+
+        parts.append("3. O que foi comprovadamente corrigido")
+        for item in (corrected_areas or []):
+            parts.append(f"- {str(item)}")
+
+        parts.append("4. O que continua frágil")
+        for item in (fragile_areas or []):
+            parts.append(f"- {str(item)}")
+
+        parts.append("5. Causas raiz estruturais reais")
+        for item in (root_causes or []):
+            parts.append(f"- {str(item)}")
+
+        parts.append("6. Onde houve erro de classificação de intenção")
+        for item in (intent_misclassification_points or []):
+            parts.append(f"- {str(item)}")
+
+        parts.append("7. Onde houve erro de roteamento")
+        for item in (routing_error_points or []):
+            parts.append(f"- {str(item)}")
+
+        parts.append("8. Onde a execução foi correta mas a resposta foi errada")
+        for item in (execution_response_mismatches or []):
+            parts.append(f"- {str(item)}")
+
+        parts.append("9. Onde há duplicidade entre agentes")
+        for item in (agent_duplication_points or []):
+            parts.append(f"- {str(item)}")
+
+        if technical_debts_by_severity:
+            parts.append("10. Dívidas técnicas reais por severidade")
+            for severity in ("critical", "high", "medium", "low"):
+                values = technical_debts_by_severity.get(severity)
+                if not isinstance(values, list) or not values:
+                    continue
+                parts.append(f"- {severity}:")
+                for item in values[:20]:
+                    parts.append(f"  - {str(item)}")
+
+        parts.append("11. O que preservar")
+        for item in (preserve_items or []):
+            parts.append(f"- {str(item)}")
+
+        parts.append("12. O que simplificar ou unificar")
+        for item in (simplify_items or []):
+            parts.append(f"- {str(item)}")
+
+        parts.append("13. Ordem recomendada de correções futuras")
+        for item in (correction_order or []):
+            parts.append(f"- {str(item)}")
+
+        if specialist_views:
+            parts.append("Visão por especialista")
+            for agent_name, entries in specialist_views.items():
+                if not isinstance(entries, list):
+                    continue
+                parts.append(f"- {agent_name}:")
+                for item in entries[:12]:
+                    parts.append(f"  - {str(item)}")
+
+        if inferences:
+            parts.append("Inferências técnicas")
+            for item in inferences[:20]:
+                parts.append(f"- {str(item)}")
+
+        if maturity_conclusion:
+            parts.append("14. Conclusão final sincera sobre a maturidade atual do sistema")
+            parts.append(maturity_conclusion)
+
+        # evita duplicação dos mesmos blocos abaixo
+        facts_observed = None
+        evidence_points = None
+        corrected_areas = None
+        fragile_areas = None
+        root_causes = None
+        intent_misclassification_points = None
+        routing_error_points = None
+        execution_response_mismatches = None
+        agent_duplication_points = None
+        preserve_items = None
+        simplify_items = None
+        correction_order = None
+        specialist_views = None
+        technical_debts_by_severity = None
+        maturity_conclusion = ""
+        inferences = None
 
     content_excerpt = (result.get("content_excerpt") or "").strip()
     if content_excerpt:
