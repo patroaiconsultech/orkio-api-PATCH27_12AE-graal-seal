@@ -5977,9 +5977,11 @@ def _github_write_request_flags(user_text: str) -> Dict[str, Any]:
         requested["batch_commit"]
         or re.search(r"(prepare\s+o\s+commit|preparar\s+commit|commit\s+direto|prepare\s+commit)", low, flags=re.IGNORECASE)
     )
+    # Opening a pull request *to* main is not the same as writing directly on main.
+    # The generic "na main"/"to main" detector must not hijack PR requests.
     requested["write_main"] = bool(
         re.search(r"(na\s+main|write\s+to\s+main|escrev[ae]\s+r?\s+na\s+main|patch\s+direto\s+na\s+main)", low, flags=re.IGNORECASE)
-    )
+    ) and not bool(requested["open_pr"])
     requested["requested"] = any(
         bool(requested[k])
         for k in ("create_branch", "create_file", "update_file", "batch_commit", "apply_patch", "prepare_commit", "open_pr", "write_main")
@@ -6150,7 +6152,7 @@ def _build_github_write_response_text(
     if not bool(snapshot.get("write_enabled")):
         return "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: escrita_github_desabilitada"
 
-    if req_flags.get("write_main"):
+    if req_flags.get("write_main") and not req_flags.get("open_pr"):
         if not bool(approval.get("allow_main")):
             return "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: escrita_na_main_sem_autorização_explícita"
         if not bool(snapshot.get("main_write_allowed_with_explicit_approval")):
@@ -8560,7 +8562,7 @@ def _dispatch_governed_github_write(
             "execution_result": None,
         }
 
-    if req_flags.get("write_main"):
+    if req_flags.get("write_main") and not req_flags.get("open_pr"):
         if not bool(approval.get("allow_main")):
             return {
                 "text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: escrita_na_main_sem_autorização_explícita",
