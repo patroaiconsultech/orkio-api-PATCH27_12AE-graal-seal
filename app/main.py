@@ -8999,11 +8999,9 @@ def _execute_capability_if_authorized(
     if not txt:
         return None
 
-    runtime_kind = (
-        ((runtime_enrichment or {}).get("intent_package") or {})
-        .get("runtime_operation", {})
-        .get("kind", "")
-    )
+    intent_package = ((runtime_enrichment or {}).get("intent_package") or {})
+    runtime_operation = intent_package.get("runtime_operation", {}) or {}
+    runtime_kind = str(runtime_operation.get("kind") or "").strip()
     planner_snapshot = (runtime_enrichment or {}).get("planner_snapshot") or {}
     required_capability = str(planner_snapshot.get("requires_capability") or "").strip()
 
@@ -9015,8 +9013,33 @@ def _execute_capability_if_authorized(
     if not allow_runtime_execution:
         return None
 
+    lowered_txt = txt.lower()
+    include_frontend = bool(runtime_operation.get("include_frontend", False)) or any(
+        term in lowered_txt
+        for term in (
+            "frontend",
+            "front-end",
+            "react",
+            "vite",
+            "web",
+            "ui",
+            "interface",
+            "appconsole",
+            "browser",
+        )
+    )
+    prepare_only = bool(
+        planner_snapshot.get("prepare_only", runtime_operation.get("prepare_only", False))
+    )
+
     try:
-        orion_result = orion_runtime_execute_alias(OrionExecuteIn(message=txt))
+        orion_result = orion_runtime_execute_alias(
+            OrionExecuteIn(
+                message=txt,
+                prepare_only=prepare_only,
+                include_frontend=include_frontend,
+            )
+        )
         if isinstance(orion_result, dict):
             return _normalize_orion_runtime_execution_result(orion_result)
     except HTTPException as e:
