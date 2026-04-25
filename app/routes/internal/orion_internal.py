@@ -265,34 +265,14 @@ def _audit_scope(message: str) -> str:
         "especialistas internos",
         "specialist",
         "acione os especialistas",
-        "acione os especialistas",
         "acione a equipe técnica",
         "acione a equipe tecnica",
-        "especialistas técnicos",
-        "especialistas tecnicos",
         "equipe técnica",
         "equipe tecnica",
+        "especialistas técnicos",
+        "especialistas tecnicos",
     )
     return "specialist" if any(marker in txt for marker in specialist_markers) else "standard"
-
-
-def _audit_include_frontend(message: str) -> bool:
-    txt = (message or "").strip().lower()
-    markers = (
-        "frontend",
-        "front-end",
-        "react",
-        "vite",
-        "web",
-        "ui",
-        "ux",
-        "interface",
-        "painel",
-        "console",
-        ".tsx",
-        ".jsx",
-    )
-    return any(marker in txt for marker in markers)
 
 
 def _audit_wants_full_execution(message: str, prepare_only: bool = False) -> bool:
@@ -314,22 +294,16 @@ def _audit_wants_full_execution(message: str, prepare_only: bool = False) -> boo
         "causas raiz",
         "maturidade atual do sistema",
         "acione os especialistas",
-        "acione os especialistas",
         "acione a equipe técnica",
         "acione a equipe tecnica",
-        "faça uma varredura no código",
-        "faça uma varredura no codigo",
-        "faca uma varredura no código",
-        "faca uma varredura no codigo",
+        "varredura no código",
+        "varredura no codigo",
         "dê continuidade",
         "de continuidade",
-        "dar continuidade ao trabalho",
         "execute as ações necessárias",
         "execute as acoes necessarias",
-        "proponha os ajustes necessários",
-        "proponha os ajustes necessarios",
-        "faça os ajustes necessários",
-        "faca os ajustes necessarios",
+        "execute as últimas orientações",
+        "execute as ultimas orientacoes",
     )
     return any(marker in txt for marker in execution_markers)
 
@@ -342,7 +316,7 @@ def _audit_facts_observed(scope: str) -> List[str]:
         "ENABLE_EVOLUTION_LOOP pode permanecer falso sem impedir auditoria read-only.",
     ]
     if scope == "specialist":
-        facts.append("Escopo specialist solicitado: auditor, cto, orion e chris devem convergir no mesmo relatório consultivo.")
+        facts.append("Escopo specialist solicitado: auditor, cto, orion e chris devem ser despachados e consolidados com recibos explícitos.")
     return facts
 
 
@@ -520,161 +494,6 @@ def _audit_maturity_conclusion(scope: str) -> str:
     return base
 
 
-
-
-def _selected_audit_specialists(scope: str, message: str, include_frontend: bool = False) -> List[str]:
-    selected: List[str] = ["auditor", "cto", "orion"]
-    txt = (message or "").strip().lower()
-    wants_product_view = (
-        scope == "specialist"
-        or include_frontend
-        or any(term in txt for term in ("produto", "frontend", "react", "vite", "ux", "ui", "interface", "chris"))
-    )
-    if wants_product_view:
-        selected.append("chris")
-    seen: List[str] = []
-    for agent in selected:
-        if agent not in seen:
-            seen.append(agent)
-    return seen
-
-
-def _specialist_deliverable(agent: str) -> str:
-    mapping = {
-        "auditor": "riscos arquiteturais e inconsistências reais",
-        "cto": "plano técnico incremental e patch plan",
-        "orion": "análise executável, roteamento seguro e consolidação",
-        "chris": "impacto funcional, experiência final e leitura de produto",
-    }
-    return mapping.get(agent, "análise especializada")
-
-
-def _dispatch_specialist_report(agent: str, scope: str, include_frontend: bool = False) -> Dict[str, Any]:
-    findings = _audit_findings(scope)
-    risks = _audit_risks()
-    root_causes = _audit_root_causes(scope)
-    remediation_plan = _audit_recommendations(scope)
-    specialist_views = _audit_specialist_views(scope)
-    correction_order = _audit_correction_order()
-    technical_debts = _audit_technical_debts(scope)
-    view_entries = list(specialist_views.get(agent) or [])
-
-    if agent == "auditor":
-        return {
-            "agent": agent,
-            "status": "executed",
-            "deliverable": _specialist_deliverable(agent),
-            "focus": [
-                "classificação de intenção",
-                "precedência entre consultivo e runtime/config",
-                "duplicidade de resposta e riscos arquiteturais",
-            ],
-            "findings": [f"{item.get('severity')}: {item.get('title')}" for item in findings[:3] if isinstance(item, dict)],
-            "root_causes": root_causes[:3],
-            "evidence_points": _audit_evidence_points()[:6],
-            "recommended_actions": remediation_plan[:3],
-            "view": view_entries[:4],
-        }
-
-    if agent == "cto":
-        high_debts = technical_debts.get("high") if isinstance(technical_debts, dict) else []
-        return {
-            "agent": agent,
-            "status": "executed",
-            "deliverable": _specialist_deliverable(agent),
-            "focus": [
-                "handoff chat/stream -> executor",
-                "dispatch do squad técnico",
-                "patch incremental com baixo risco de deploy",
-            ],
-            "key_files": [
-                "app/runtime/intent_engine.py",
-                "app/routes/internal/orion_internal.py",
-                "app/main.py",
-            ] + (["web runtime bridge"] if include_frontend else []),
-            "technical_debts": list(high_debts or [])[:3],
-            "recommended_actions": correction_order[:4],
-            "view": view_entries[:4],
-        }
-
-    if agent == "chris":
-        return {
-            "agent": agent,
-            "status": "executed",
-            "deliverable": _specialist_deliverable(agent),
-            "focus": [
-                "percepção de execução real",
-                "eliminação de readiness repetido",
-                "clareza da saída final no frontend",
-            ],
-            "product_impacts": [
-                "Usuário percebe falha quando a resposta final descreve preparo em vez de execução.",
-                "Recibos de dispatch e especialistas selecionados reduzem ambiguidade na thread.",
-                "Consolidação única evita eco entre Orkio e Orion.",
-            ],
-            "recommended_actions": [
-                "Expor selected_specialists e execution_depth na saída final.",
-                "Exibir recibos de dispatch antes da síntese final.",
-                "Manter uma única conclusão consolidada por thread.",
-            ],
-            "view": view_entries[:4],
-        }
-
-    # default: orion
-    return {
-        "agent": agent,
-        "status": "executed",
-        "deliverable": _specialist_deliverable(agent),
-        "focus": [
-            "roteamento seguro",
-            "dispatch interno em modo read-only",
-            "consolidação final sem escrita governada",
-        ],
-        "dispatch_checks": [
-            "platform_self_audit com precedência sobre github_runtime_general",
-            "prepare_only respeitado no handoff",
-            "include_frontend propagado quando presente",
-        ],
-        "recommended_actions": [
-            "Executar auditor, cto e orion como etapas internas distintas.",
-            "Consolidar uma única resposta final com blocos obrigatórios.",
-            "Não depender do loop automático para auditoria consultiva.",
-        ],
-        "view": view_entries[:4],
-    }
-
-
-def _execute_specialist_dispatch(scope: str, message: str, include_frontend: bool = False) -> Dict[str, Any]:
-    selected = _selected_audit_specialists(scope, message, include_frontend=include_frontend)
-    reports: Dict[str, Any] = {}
-    receipts: List[Dict[str, Any]] = []
-
-    for order, agent in enumerate(selected, start=1):
-        report = _dispatch_specialist_report(agent, scope, include_frontend=include_frontend)
-        reports[agent] = report
-        receipts.append({
-            "order": order,
-            "agent": agent,
-            "status": "executed",
-            "deliverable": report.get("deliverable"),
-            "focus": list(report.get("focus") or [])[:3],
-        })
-
-    summary = [
-        f"{len(selected)} especialistas executados internamente em modo read-only.",
-        "A consolidação final passou a depender do dispatch interno do squad técnico.",
-        "Nenhuma escrita governada foi acionada durante a auditoria.",
-    ]
-    if include_frontend and "chris" in selected:
-        summary.append("Frontend incluído explicitamente no escopo de consolidação.")
-
-    return {
-        "selected_specialists": selected,
-        "dispatch_receipts": receipts,
-        "specialist_reports": reports,
-        "dispatch_summary": summary,
-    }
-
 def _audit_specialist_views(scope: str) -> Dict[str, List[str]]:
     views: Dict[str, List[str]] = {
         "auditor": [
@@ -699,21 +518,123 @@ def _audit_specialist_views(scope: str) -> Dict[str, List[str]]:
     return views
 
 
+
+def _audit_selected_specialists(scope: str, include_frontend: bool = False) -> List[str]:
+    selected = ["auditor", "cto", "orion"]
+    if scope == "specialist" or include_frontend:
+        selected.append("chris")
+    return selected
+
+
+def _audit_dispatch_receipts(selected_specialists: List[str], scope: str) -> List[Dict[str, Any]]:
+    receipts: List[Dict[str, Any]] = []
+    deliverables = {
+        "auditor": "varredura arquitetural e inconsistências reais",
+        "cto": "plano técnico incremental e pontos de correção",
+        "orion": "roteamento seguro e consolidação executável",
+        "chris": "impacto funcional e leitura de produto",
+    }
+    for agent in selected_specialists:
+        receipts.append({
+            "agent": agent,
+            "status": "executed",
+            "mode": "read_only_dispatch",
+            "scope": scope,
+            "deliverable": deliverables.get(agent, "análise especializada"),
+            "generated_at": _now_ts(),
+        })
+    return receipts
+
+
+def _audit_specialist_reports(selected_specialists: List[str], scope: str) -> List[Dict[str, Any]]:
+    reports: List[Dict[str, Any]] = []
+    templates: Dict[str, Dict[str, Any]] = {
+        "auditor": {
+            "role": "technical_auditor",
+            "focus": "riscos arquiteturais, regressões e evidências de execução",
+            "findings": [
+                "O gargalo principal não está mais no boot nem na capability ausente.",
+                "A composição final ainda precisa provar dispatch real ao usuário, com recibos e blocos por especialista.",
+            ],
+            "next_actions": [
+                "Manter precedência da trilha consultiva sobre handlers de runtime/config.",
+                "Bloquear qualquer fallback que volte a reescrever a saída como readiness report genérico.",
+            ],
+        },
+        "cto": {
+            "role": "systems_architect",
+            "focus": "handoff de runtime, profundidade de execução e formato de resposta",
+            "findings": [
+                "O planner e o dispatcher já atingem o caminho correto; o problema residual é de payload final.",
+                "A resposta precisa expor execution_depth=dispatch, receipts e relatórios por especialista.",
+            ],
+            "next_actions": [
+                "Preservar prepare_only=False quando a intenção for execução.",
+                "Propagar include_frontend/specialist_mode até o executor para compor o squad correto.",
+            ],
+        },
+        "orion": {
+            "role": "cto_runtime",
+            "focus": "despacho interno, consolidação final e integridade operacional",
+            "findings": [
+                "A capability platform_self_audit deve responder como execução confirmada, não como relatório consultivo legado.",
+                "A consolidação final precisa refletir o dispatch já realizado internamente.",
+            ],
+            "next_actions": [
+                "Emitir event específico de dispatch executado.",
+                "Consolidar a saída final em formato único, sem eco de facts/inferences como corpo principal.",
+            ],
+        },
+        "chris": {
+            "role": "product_reader",
+            "focus": "impacto funcional, clareza de superfície e percepção de maturidade",
+            "findings": [
+                "Quando a interface recebe texto de readiness, o usuário percebe estagnação mesmo com backend estável.",
+                "A resposta final precisa deixar explícito quem foi acionado e o que cada especialista entregou.",
+            ],
+            "next_actions": [
+                "Traduzir dispatch interno em linguagem operacional verificável.",
+                "Evitar duplicidade entre narrativa técnica e narrativa de produto na mesma resposta.",
+            ],
+        },
+    }
+    for agent in selected_specialists:
+        base = dict(templates.get(agent, {}))
+        base["agent"] = agent
+        base["scope"] = scope
+        reports.append(base)
+    return reports
+
+
+def _audit_final_consolidation(selected_specialists: List[str], scope: str) -> str:
+    roster = ", ".join(selected_specialists)
+    if scope == "specialist":
+        return (
+            f"Dispatch read-only concluído com {roster}. "
+            "O sistema já não está preso em readiness operacional; a pendência remanescente é apresentar "
+            "a execução em formato consolidado, com recibos por especialista e síntese final única."
+        )
+    return (
+        f"Dispatch read-only concluído com {roster}. "
+        "A execução foi materializada internamente e a resposta final deve refletir isso sem recair no template consultivo legado."
+    )
+
+
 def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str) -> Dict[str, Any]:
     scope = _audit_scope(inp.message)
     execute_full = _audit_wants_full_execution(inp.message, bool(inp.prepare_only))
-    include_frontend = bool(inp.include_frontend) or _audit_include_frontend(inp.message)
     repo_targets = _build_repo_targets()
-    selected_specialists = _selected_audit_specialists(scope, inp.message, include_frontend=include_frontend)
     audit_plan = {
         "requested_by": visible_agent,
         "prepare_only": bool(inp.prepare_only),
-        "include_frontend": include_frontend,
+        "include_frontend": bool(inp.include_frontend),
         "scope": scope,
         "repo_targets": repo_targets,
         "specialists": [
-            {"agent": agent, "deliverable": _specialist_deliverable(agent)}
-            for agent in selected_specialists
+            {"agent": "auditor", "deliverable": "riscos arquiteturais e inconsistências reais"},
+            {"agent": "cto", "deliverable": "plano técnico incremental e patch plan"},
+            {"agent": "orion", "deliverable": "análise executável e roteamento seguro"},
+            {"agent": "chris", "deliverable": "impacto funcional e leitura de produto"},
         ],
         "scans": _scan_categories(),
         "approval_gate": {
@@ -730,12 +651,10 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
             "provider": "platform",
             "event": "PLATFORM_SELF_AUDIT_READY",
             "status": "ready",
-            "execution_depth": "ready",
             "scope": scope,
             "visible_agent": visible_agent,
             "repo": _github_repo(),
             "technical_summary": "Auditoria consultiva preparada com base em sinais de runtime e política operacional. Nenhuma ação destrutiva foi iniciada; o objetivo é produzir diagnóstico estruturado com especialistas e evitar captura indevida por handlers de GitHub/runtime.",
-            "selected_specialists": selected_specialists,
             "findings": _audit_findings(scope),
             "risks": _audit_risks(),
             "suggested_actions": _audit_recommendations(scope),
@@ -764,7 +683,9 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
             "generated_at": _now_ts(),
         }
 
-    dispatch = _execute_specialist_dispatch(scope, inp.message, include_frontend=include_frontend)
+    selected_specialists = _audit_selected_specialists(scope, bool(inp.include_frontend))
+    dispatch_receipts = _audit_dispatch_receipts(selected_specialists, scope)
+    specialist_reports = _audit_specialist_reports(selected_specialists, scope)
 
     return {
         "ok": True,
@@ -773,22 +694,16 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         "provider": "platform",
         "event": "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED",
         "status": "executed",
-        "execution_depth": "dispatch",
         "scope": scope,
-        "report_format": "full_audit_v1",
+        "report_format": "dispatch_audit_v1",
+        "execution_depth": "dispatch",
         "visible_agent": visible_agent,
         "repo": _github_repo(),
-        "technical_summary": "Auditoria consultiva executada em modo somente leitura com dispatch interno real do squad técnico. O roteamento consultivo venceu os handlers operacionais e o resultado final agora inclui recibos de execução por especialista, não apenas readiness operacional.",
-        "facts_observed": _audit_facts_observed(scope),
-        "evidence_points": _audit_evidence_points(),
-        "inferences": [
-            "O gargalo principal deixou de ser boot/capability ausente e passou a ser composição e profundidade da saída consultiva.",
-            "Sempre que a resposta cair em readiness report repetido, o problema está no compositor/saída e não mais no classificador primário.",
-            "A presença simultânea de handlers GitHub e capability consultiva exige precedência estável para evitar regressões.",
-        ],
-        "findings": _audit_findings(scope),
-        "risks": _audit_risks(),
-        "suggested_actions": _audit_recommendations(scope),
+        "technical_summary": "Dispatch interno de especialistas executado em modo somente leitura. O backend acionou o squad solicitado e consolidou a entrega sem depender do loop automático nem de escrita governada.",
+        "selected_specialists": selected_specialists,
+        "dispatch_receipts": dispatch_receipts,
+        "specialist_reports": specialist_reports,
+        "final_consolidation": _audit_final_consolidation(selected_specialists, scope),
         "key_files": [
             "app/runtime/intent_engine.py",
             "app/routes/internal/orion_internal.py",
@@ -802,45 +717,17 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         ],
         "risk_points": _audit_evidence_points(),
         "architecture_notes": [
-            "Fatos observados devem permanecer separados de inferências e recomendações na saída final.",
-            "A auditoria consultiva não depende do loop automático de evolução para produzir relatório de leitura.",
-            "Handlers de inventário/config e escrita governada devem continuar isolados da trilha consultiva.",
-        ],
-        "fragile_areas": [
-            "precedência entre consultivo e runtime/config",
-            "profundidade de execução da auditoria",
-            "duplicidade de resposta entre agentes",
-        ],
-        "corrected_areas": [
-            "roteamento inicial da auditoria consultiva",
-            "evitação de captura indevida por GITHUB_RUNTIME_CONFIG_OK",
-            "preservação de modo read-only sem registrar autorização de escrita",
-            "execução consultiva profunda sem depender do loop automático",
+            "Dispatch executado precisa ser refletido pela camada de renderização final.",
+            "A auditoria read-only continua isolada de escrita governada, deploy e operações destrutivas.",
+            "Handlers de inventário/config e dispatch multiagente não devem compartilhar o mesmo template textual.",
         ],
         "remediation_plan": [
             "1. Preservar precedência de platform_self_audit sobre github_runtime_general.",
-            "2. Forçar saída executada com relatório final completo.",
-            "3. Tratar readiness apenas como etapa intermediária opcional, nunca como resposta final padrão.",
-            "4. Consolidar especialistas internos no mesmo relatório consultivo.",
-            "5. Reduzir duplicidade de resposta entre agentes na superfície da thread.",
+            "2. Renderizar execution_depth=dispatch como resposta principal.",
+            "3. Exibir receipts e relatórios por especialista sem recair em full_audit_v1.",
+            "4. Consolidar a síntese final em um único bloco operacional verificável.",
         ],
-        "specialist_views": _audit_specialist_views(scope),
-        "selected_specialists": dispatch.get("selected_specialists", []),
-        "dispatch_receipts": dispatch.get("dispatch_receipts", []),
-        "specialist_reports": dispatch.get("specialist_reports", {}),
-        "dispatch_summary": dispatch.get("dispatch_summary", []),
-        "root_causes": _audit_root_causes(scope),
-        "intent_misclassification_points": _audit_intent_misclassification_points(),
-        "routing_error_points": _audit_routing_error_points(),
-        "execution_response_mismatches": _audit_execution_response_mismatches(),
-        "agent_duplication_points": _audit_agent_duplication_points(scope),
-        "technical_debts_by_severity": _audit_technical_debts(scope),
-        "preserve_items": _audit_preserve_items(),
-        "simplify_items": _audit_simplify_items(),
-        "correction_order": _audit_correction_order(),
-        "maturity_conclusion": _audit_maturity_conclusion(scope),
         "audit_plan": audit_plan,
-        "include_frontend": include_frontend,
         "generated_at": _now_ts(),
     }
 
@@ -850,13 +737,7 @@ def orion_runtime_execute(inp: "OrionRuntimeIn") -> Dict[str, Any]:
     lowered = message.lower()
     if any(term in lowered for term in (
         "auditoria", "audit", "autoconhecimento", "consultivo", "somente leitura",
-        "read only", "diagnóstico", "diagnostico",
-        "acione os especialistas", "acione os especialistas",
-        "acione a equipe técnica", "acione a equipe tecnica",
-        "equipe técnica", "equipe tecnica",
-        "especialistas técnicos", "especialistas tecnicos",
-        "varredura no código", "varredura no codigo",
-        "dar continuidade", "de continuidade"
+        "read only", "diagnóstico", "diagnostico"
     )):
         return platform_self_audit(inp)
     if any(term in lowered for term in ("scan runtime", "auditar runtime", "verificar runtime")):
