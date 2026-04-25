@@ -6615,6 +6615,90 @@ def _github_log(event: str, **fields: Any) -> None:
     except Exception:
         pass
 
+
+_GITHUB_ACTION_CACHE_LOCK = _threading.Lock()
+_GITHUB_ACTION_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _github_action_cache_ttl_seconds() -> int:
+    raw = _clean_env(os.getenv("GITHUB_ACTION_CACHE_TTL_SECONDS", "120"), default="120") or "120"
+    try:
+        ttl = int(raw)
+    except Exception:
+        ttl = 120
+    return max(30, min(ttl, 900))
+
+
+def _github_action_cache_key(kind: str, *parts: Any) -> str:
+    joined = "||".join(str(part or "") for part in parts)
+    digest = hashlib.sha256(joined.encode("utf-8", errors="replace")).hexdigest()
+    return f"{kind}:{digest}"
+
+
+def _github_action_cache_get(key: str) -> Optional[Dict[str, Any]]:
+    now = time.time()
+    with _GITHUB_ACTION_CACHE_LOCK:
+        entry = _GITHUB_ACTION_CACHE.get(key)
+        if not isinstance(entry, dict):
+            return None
+        try:
+            expires_at = float(entry.get("expires_at") or 0)
+        except Exception:
+            expires_at = 0.0
+        if expires_at <= now:
+            _GITHUB_ACTION_CACHE.pop(key, None)
+            return None
+        payload = entry.get("payload")
+        return dict(payload or {}) if isinstance(payload, dict) else None
+
+
+def _github_action_cache_put(key: str, payload: Dict[str, Any], ttl_seconds: Optional[int] = None) -> Dict[str, Any]:
+    ttl = max(30, int(ttl_seconds or _github_action_cache_ttl_seconds()))
+    stored = dict(payload or {})
+    with _GITHUB_ACTION_CACHE_LOCK:
+        _GITHUB_ACTION_CACHE[key] = {
+            "expires_at": time.time() + ttl,
+            "payload": stored,
+        }
+    return dict(stored)
+
+
+def _github_repo_owner(repo: str) -> str:
+    return str((repo or "").split("/", 1)[0] or "").strip()
+
+
+def _github_find_existing_pull_request(repo: str, head: str, base: str) -> Optional[Dict[str, Any]]:
+    owner = _github_repo_owner(repo)
+    if not owner or not repo or not head or not base:
+        return None
+    url = f"https://api.github.com/repos/{repo}/pulls?state=open&head={owner}:{head}&base={base}"
+    status, body = _github_api_json("GET", url, None)
+    if status != 200 or not isinstance(body, list):
+        return None
+    for item in body:
+        if not isinstance(item, dict):
+            continue
+        try:
+            number = int(item.get("number") or 0)
+        except Exception:
+            number = 0
+        html_url = str(item.get("html_url") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if number > 0:
+            return {
+                "handled": True,
+                "success": True,
+                "provider": "github",
+                "repo": repo,
+                "branch": head,
+                "base_branch": base,
+                "pull_request_number": number,
+                "pull_request_url": html_url,
+                "title": title,
+                "message": "Pull request já existente confirmado operacionalmente.",
+            }
+    return None
+
 def _github_verify_file_exists(repo: str, branch: str, path: str) -> tuple[bool, str, Dict[str, Any]]:
     verify_url = f"https://api.github.com/repos/{repo}/contents/{path}?ref={branch}"
     status_verify, body_verify = _github_api_json("GET", verify_url, None)
@@ -7155,6 +7239,17 @@ def _github_create_file_capability(*, path: str, content: str, branch: Optional[
     default_branch = _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main"
     branch = (_clean_env(branch or "", default="") or default_branch)
     token = _github_token_value()
+    cache_key = _github_action_cache_key(
+        "create_file",
+        repo,
+        branch,
+        path,
+        hashlib.sha256((content or "").encode("utf-8", errors="replace")).hexdigest(),
+        trace_id or "",
+    )
+    cached = _github_action_cache_get(cache_key)
+    if cached:
+        return cached
     if not _github_write_runtime_enabled():
         return {"handled": True, "success": False, "provider": "github", "message": "GitHub write runtime desabilitado por ambiente."}
     if branch == default_branch and not _github_safe_main_write_allowed():
@@ -7235,7 +7330,7 @@ def _github_create_file_capability(*, path: str, content: str, branch: Optional[
         size_bytes = 0
 
     _github_log("GITHUB_WRITE_VERIFY_OK", repo=repo, branch=branch, path=verified_path or path, sha=verified_sha, trace_id=trace_id or "")
-    return {
+    result = {
         "handled": True,
         "success": True,
         "provider": "github",
@@ -7248,6 +7343,7 @@ def _github_create_file_capability(*, path: str, content: str, branch: Optional[
         "trace_id": trace_id,
         "message": "Arquivo criado com confirmação operacional verificável.",
     }
+    return _github_action_cache_put(cache_key, result)
 
 def _github_verify_branch_exists(repo: str, branch: str) -> tuple[bool, str, Dict[str, Any]]:
     verify_url = f"https://api.github.com/repos/{repo}/git/ref/heads/{branch}"
@@ -8185,6 +8281,18 @@ def _github_update_file_capability(*, path: str, content: str, branch: Optional[
     repo = _clean_env(os.getenv("GITHUB_REPO", ""))
     branch = (_clean_env(branch or "", default="") or _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main")
     token = _github_token_value()
+    cache_key = _github_action_cache_key(
+        "update_file",
+        repo,
+        branch,
+        path,
+        mode,
+        hashlib.sha256((content or "").encode("utf-8", errors="replace")).hexdigest(),
+        trace_id or "",
+    )
+    cached = _github_action_cache_get(cache_key)
+    if cached:
+        return cached
     if not _github_write_runtime_enabled():
         return {"handled": True, "success": False, "provider": "github", "message": "GitHub write runtime desabilitado por ambiente."}
     if branch == (_clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main") and not _github_safe_main_write_allowed():
@@ -8239,7 +8347,8 @@ def _github_update_file_capability(*, path: str, content: str, branch: Optional[
 
     verified_sha = (((verify_body or {}).get("sha") or "").strip()) or commit_sha
     _github_log("GITHUB_UPDATE_VERIFY_OK", repo=repo, branch=branch, path=path, sha=verified_sha, trace_id=trace_id or "")
-    return {"handled": True, "success": True, "provider": "github", "repo": repo, "branch": branch, "path": path, "commit_sha": verified_sha, "message": "Arquivo atualizado com confirmação operacional verificável."}
+    result = {"handled": True, "success": True, "provider": "github", "repo": repo, "branch": branch, "path": path, "commit_sha": verified_sha, "message": "Arquivo atualizado com confirmação operacional verificável."}
+    return _github_action_cache_put(cache_key, result)
 
 def _github_compare_branches(repo: str, base: str, head: str) -> Dict[str, Any]:
     url = f"https://api.github.com/repos/{repo}/compare/{base}...{head}"
@@ -8383,6 +8492,18 @@ def _github_commit_batch_capability(*, changes: List[Dict[str, str]], branch: Op
 def _github_create_pull_request_capability(*, head: str, base: str, title: str, body: Optional[str] = None, trace_id: Optional[str] = None) -> Dict[str, Any]:
     repo = _clean_env(os.getenv("GITHUB_REPO", ""))
     token = _github_token_value()
+    cache_key = _github_action_cache_key(
+        "open_pr",
+        repo,
+        head,
+        base,
+        title,
+        body or "",
+        trace_id or "",
+    )
+    cached = _github_action_cache_get(cache_key)
+    if cached:
+        return cached
     if not _github_pr_runtime_enabled():
         return {"handled": True, "success": False, "provider": "github", "message": "GitHub PR runtime desabilitado por ambiente."}
     if not token or not repo:
@@ -8416,13 +8537,29 @@ def _github_create_pull_request_capability(*, head: str, base: str, title: str, 
     _github_log("GITHUB_PR_ATTEMPT", repo=repo, head=head, base=base, title=title, trace_id=trace_id or "")
     status, resp_body = _github_api_json("POST", f"https://api.github.com/repos/{repo}/pulls", payload)
     if status not in (200, 201):
+        msg = (resp_body.get("message") if isinstance(resp_body, dict) else None) or "Falha ao criar pull request no GitHub."
+        existing_pr = None
+        low_msg = str(msg or "").strip().lower()
+        if status == 422 and ("validation failed" in low_msg or "already exists" in low_msg or "already has" in low_msg):
+            existing_pr = _github_find_existing_pull_request(repo=repo, head=head, base=base)
+        if existing_pr:
+            _github_log(
+                "GITHUB_PR_EXISTING_OK",
+                repo=repo,
+                head=head,
+                base=base,
+                number=existing_pr.get("pull_request_number") or 0,
+                trace_id=trace_id or "",
+            )
+            return _github_action_cache_put(cache_key, existing_pr)
         _github_log("GITHUB_PR_FAILED", repo=repo, head=head, base=base, status=status, trace_id=trace_id or "")
-        return {"handled": True, "success": False, "provider": "github", "repo": repo, "branch": head, "base_branch": base, "message": (resp_body.get("message") if isinstance(resp_body, dict) else None) or "Falha ao criar pull request no GitHub."}
+        return {"handled": True, "success": False, "provider": "github", "repo": repo, "branch": head, "base_branch": base, "message": msg}
     number = int((resp_body or {}).get("number") or 0)
     html_url = str((resp_body or {}).get("html_url") or "").strip()
     pr_title = str((resp_body or {}).get("title") or title).strip()
     _github_log("GITHUB_PR_VERIFY_OK", repo=repo, head=head, base=base, number=number, trace_id=trace_id or "")
-    return {"handled": True, "success": True, "provider": "github", "repo": repo, "branch": head, "base_branch": base, "pull_request_number": number, "pull_request_url": html_url, "title": pr_title, "message": "Pull request criado com confirmação operacional verificável."}
+    result = {"handled": True, "success": True, "provider": "github", "repo": repo, "branch": head, "base_branch": base, "pull_request_number": number, "pull_request_url": html_url, "title": pr_title, "message": "Pull request criado com confirmação operacional verificável."}
+    return _github_action_cache_put(cache_key, result)
 
 def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, Any]:
     data = dict(raw or {})
