@@ -9229,69 +9229,6 @@ def _apply_truthful_execution_mode(answer: str, execution_result: Optional[Dict[
         "de execução e retorno do provedor."
     )
 
-
-def _normalize_chat_text(value: str) -> str:
-    txt = (value or "").strip().lower()
-    if not txt:
-        return ""
-    txt = re.sub(r"```.*?```", " ", txt, flags=re.DOTALL)
-    txt = re.sub(r"`+", " ", txt)
-    txt = re.sub(r"[@#*_>\-]+", " ", txt)
-    txt = re.sub(r"\s+", " ", txt)
-    return txt.strip()
-
-def _looks_like_user_instruction_echo(answer: str, user_message: str) -> bool:
-    ans = _normalize_chat_text(answer)
-    usr = _normalize_chat_text(user_message)
-    if not ans or not usr:
-        return False
-    if ans == usr:
-        return True
-    if len(usr) >= 40 and (ans.startswith(usr) or usr.startswith(ans)):
-        return True
-    if len(usr) >= 60 and usr in ans:
-        return True
-    return False
-
-def _apply_chat_anti_echo(answer: str, user_message: str) -> str:
-    txt = (answer or "").strip()
-    if not txt:
-        return txt
-    if not _looks_like_user_instruction_echo(txt, user_message):
-        return txt
-    return (
-        "Recebi a instrução, mas ainda não obtive uma saída real do agente para registrar sem eco da sua própria mensagem. "
-        "Nenhuma ação externa foi assumida como concluída."
-    )
-
-def _pick_runtime_primary_agent(target_agents: List[Any], requested_names: Optional[List[str]] = None) -> Optional[Any]:
-    if not target_agents:
-        return None
-
-    requested_norm = [str(x).strip().lower() for x in (requested_names or []) if str(x).strip()]
-
-    def _agent_name(ag: Any) -> str:
-        if isinstance(ag, dict):
-            return str(ag.get("name") or "").strip().lower()
-        return str(getattr(ag, "name", "") or "").strip().lower()
-
-    for req in requested_norm:
-        for ag in target_agents:
-            name = _agent_name(ag)
-            first = name.split()[0] if name else ""
-            if req == name or req == first:
-                return ag
-
-    preferred = ("orion", "orkio", "chris")
-    for pref in preferred:
-        for ag in target_agents:
-            name = _agent_name(ag)
-            first = name.split()[0] if name else ""
-            if pref == name or pref == first:
-                return ag
-
-    return target_agents[0]
-
 def _track_execution_event(
     db: Session,
     *,
@@ -9519,28 +9456,6 @@ def chat(
     except Exception:
         pass
 
-    # PATCH27_12AJ — execution-first collapse for sync chat
-    should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
-    runtime_primary_agent = None
-    if should_execute_runtime:
-        try:
-            runtime_primary_agent = _pick_runtime_primary_agent(target_agents, requested_names)
-        except Exception:
-            runtime_primary_agent = None
-        if runtime_primary_agent is not None:
-            target_agents = [runtime_primary_agent]
-        try:
-            dag_snapshot_live = runtime_enrichment.get("dag_snapshot") if isinstance(runtime_enrichment, dict) else {}
-            if isinstance(dag_snapshot_live, dict):
-                dag_snapshot_live["runtime_execution_first"] = True
-                dag_snapshot_live["routing_mode"] = "single"
-                if runtime_primary_agent is not None:
-                    dag_snapshot_live["runtime_primary_agent_id"] = getattr(runtime_primary_agent, "id", None)
-                    dag_snapshot_live["runtime_primary_agent_name"] = getattr(runtime_primary_agent, "name", None)
-                runtime_enrichment["dag_snapshot"] = dag_snapshot_live
-        except Exception:
-            pass
-
     for agent in target_agents:
 
         # PATCH0100_18: per-agent history in Team mode to avoid leaking other agents' answers
@@ -9605,7 +9520,7 @@ def chat(
 
         execution_result = None
         capability_inventory_answer = None
-        # PATCH27_12AJ — should_execute_runtime decidido antes do loop
+        should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
         if blocked_reply is None:
             try:
                 if _is_explicit_github_create_branch_command(inp.message) or _is_github_write_request_or_authorization(inp.message):
@@ -9678,7 +9593,6 @@ def chat(
         answer = blocked_reply or (ans_obj.get("text") if ans_obj else None)
 
         answer = _apply_truthful_execution_mode(answer or "", execution_result=execution_result)
-        answer = _apply_chat_anti_echo(answer or "", inp.message)
 
         if ans_obj and ans_obj.get("code") and not answer:
             # surface structured error
@@ -10077,6 +9991,63 @@ def _reorder_agents_by_planner(target_agents: List[Any], planner_snapshot: Optio
             out.append(ag)
             seen.add(agid)
     return out
+
+
+
+def _pick_runtime_primary_agent(target_agents: List[Any], requested_names: Optional[List[str]] = None) -> Optional[Any]:
+    """Pick a single primary agent for execution-first runtime flows.
+    Preference order:
+    1) first explicit requested specialist that exists in target_agents
+    2) first agent already ordered by planner/routing
+    """
+    if not target_agents:
+        return None
+
+    requested = [str(x).strip().lower() for x in (requested_names or []) if str(x).strip()]
+
+    def _agent_name(ag: Any) -> str:
+        if isinstance(ag, dict):
+            return str(ag.get("name") or "").strip().lower()
+        return str(getattr(ag, "name", "") or "").strip().lower()
+
+    if requested:
+        for req in requested:
+            for ag in target_agents:
+                name = _agent_name(ag)
+                first = name.split()[0] if name else ""
+                if req == name or req == first:
+                    return ag
+
+    return target_agents[0]
+
+
+def _normalize_for_echo(text_value: Optional[str]) -> str:
+    txt = str(text_value or "").strip().lower()
+    if not txt:
+        return ""
+    txt = re.sub(r"@([a-z0-9_\-]{2,64})", " ", txt, flags=re.IGNORECASE)
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt
+
+
+def _looks_like_user_instruction_echo(answer: Optional[str], user_message: Optional[str]) -> bool:
+    a = _normalize_for_echo(answer)
+    b = _normalize_for_echo(user_message)
+    if not a or not b:
+        return False
+    return a == b or a in b or b in a
+
+
+def _apply_chat_anti_echo(answer: Optional[str], user_message: Optional[str]) -> str:
+    txt = (answer or "").strip()
+    if not txt:
+        return txt
+    if _looks_like_user_instruction_echo(txt, user_message):
+        return (
+            "Recebi a instrução, mas ainda não obtive uma saída real do agente para registrar "
+            "sem eco da sua própria mensagem. Nenhuma ação externa foi assumida como concluída."
+        )
+    return txt
 
 def _build_runtime_enrichment(
     db: Session,
@@ -12990,31 +12961,6 @@ async def chat_stream(
     except Exception:
         pass
 
-    # PATCH27_12AK — execution-first collapse for SSE
-    should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
-    runtime_primary_agent = None
-
-    if should_execute_runtime:
-        try:
-            runtime_primary_agent = _pick_runtime_primary_agent(target_agents, requested_names)
-        except Exception:
-            runtime_primary_agent = None
-
-        if runtime_primary_agent is not None:
-            target_agents = [runtime_primary_agent]
-
-    try:
-        dag_snapshot_live = runtime_enrichment.get("dag_snapshot") if isinstance(runtime_enrichment, dict) else {}
-        if isinstance(dag_snapshot_live, dict):
-            dag_snapshot_live["runtime_execution_first"] = bool(should_execute_runtime)
-            dag_snapshot_live["routing_mode"] = "single" if len(target_agents) == 1 else dag_snapshot_live.get("routing_mode")
-            if runtime_primary_agent is not None:
-                dag_snapshot_live["runtime_primary_agent_id"] = runtime_primary_agent.get("id") if isinstance(runtime_primary_agent, dict) else getattr(runtime_primary_agent, "id", None)
-                dag_snapshot_live["runtime_primary_agent_name"] = runtime_primary_agent.get("name") if isinstance(runtime_primary_agent, dict) else getattr(runtime_primary_agent, "name", None)
-            runtime_enrichment["dag_snapshot"] = dag_snapshot_live
-    except Exception:
-        pass
-
     _stream_failed_nodes: List[str] = []
     _stream_executed_nodes: List[str] = []
     _stream_started_at = now_ts()
@@ -13060,6 +13006,38 @@ async def chat_stream(
         if extra:
             payload.update({k: v for k, v in extra.items() if v is not None})
         return sse_event("execution", payload)
+
+
+    # PATCH27_12AM — execution-first collapse for /api/chat/stream
+    should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
+    runtime_primary_agent = None
+
+    if should_execute_runtime:
+        try:
+            runtime_primary_agent = _pick_runtime_primary_agent(target_agents, requested_names)
+        except Exception:
+            runtime_primary_agent = None
+
+        if runtime_primary_agent is not None:
+            target_agents = [runtime_primary_agent]
+
+    try:
+        dag_snapshot_live = runtime_enrichment.get("dag_snapshot") if isinstance(runtime_enrichment, dict) else {}
+        if isinstance(dag_snapshot_live, dict):
+            dag_snapshot_live["runtime_execution_first"] = bool(should_execute_runtime)
+            dag_snapshot_live["routing_mode"] = "single" if len(target_agents) == 1 else dag_snapshot_live.get("routing_mode")
+            if runtime_primary_agent is not None:
+                dag_snapshot_live["runtime_primary_agent_id"] = (
+                    runtime_primary_agent.get("id") if isinstance(runtime_primary_agent, dict)
+                    else getattr(runtime_primary_agent, "id", None)
+                )
+                dag_snapshot_live["runtime_primary_agent_name"] = (
+                    runtime_primary_agent.get("name") if isinstance(runtime_primary_agent, dict)
+                    else getattr(runtime_primary_agent, "name", None)
+                )
+            runtime_enrichment["dag_snapshot"] = dag_snapshot_live
+    except Exception:
+        pass
 
     async def gen():
         # First status quickly
@@ -13215,7 +13193,8 @@ async def chat_stream(
 
                 execution_result = None
                 capability_inventory_answer = None
-                # PATCH27_12AK — should_execute_runtime decidido antes do loop
+                # PATCH27_12AM
+                # usar should_execute_runtime já calculado antes do loop
                 force_governed_branch_dispatch = False
                 try:
                     _forced_branch_req = _extract_github_create_branch_request(message)
@@ -13474,18 +13453,36 @@ async def chat_stream(
                 ans = _apply_truthful_execution_mode((ans_obj.get("text") or "").strip(), execution_result=execution_result)
                 ans = _apply_chat_anti_echo(ans, message)
 
-                # PATCH27_12AK — não persistir eco/fallback repetido por agente
-                if _looks_like_user_instruction_echo(ans, message) and not (execution_result and execution_result.get("success")):
+                # PATCH27_12AM — bloquear persistência de fallback/anti-echo sem execução real
+                _block_persist_fallback = False
+                try:
+                    _ans_norm = " ".join(str(ans or "").strip().split()).lower()
+                    _fallback_norm = " ".join(
+                        (
+                            "Recebi a instrução, mas ainda não obtive uma saída real do agente para registrar "
+                            "sem eco da sua própria mensagem. Nenhuma ação externa foi assumida como concluída."
+                        ).split()
+                    ).lower()
+
+                    _is_truthful_fallback = (_ans_norm == _fallback_norm)
+                    _has_real_execution = bool(execution_result and execution_result.get("success") is True)
+
+                    if (not _has_real_execution) and (_is_truthful_fallback or _looks_like_user_instruction_echo(ans, message)):
+                        _block_persist_fallback = True
+                except Exception:
+                    _block_persist_fallback = False
+
+                if _block_persist_fallback:
                     try:
                         yield sse_execution(
-                            "assistant_skipped_echo",
+                            "assistant_persist_skipped",
                             f"{ag_name} sem saída própria para persistir",
                             kind="warning",
                             scope="agent",
                             agent_id=ag_id,
                             agent_name=ag_name,
                             started_monotonic=agent_started_monotonic,
-                            detail="Resposta eco/fallback descartada para evitar duplicação entre agentes.",
+                            detail="Fallback/anti-echo sem execution_result.success não será gravado no histórico.",
                         )
                         yield sse_event(
                             "agent_done",
