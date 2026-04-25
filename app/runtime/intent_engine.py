@@ -122,6 +122,19 @@ _AUDIT_TERMS = [
     "sugira melhorias por especialidade",
     "melhorias por especialidade",
     "sem executar nada",
+    "varredura no código",
+    "varredura no codigo",
+    "varredura no code",
+    "varredura no repositório",
+    "varredura no repositorio",
+    "propor melhorias necessárias",
+    "propor melhorias necessarias",
+    "acionar os especialistas",
+    "acione os especialistas",
+    "acionar a equipe técnica",
+    "acionar a equipe tecnica",
+    "acione a equipe técnica",
+    "acione a equipe tecnica",
 ]
 
 _SPECIALIST_AUDIT_TERMS = [
@@ -147,6 +160,19 @@ _AUDIT_EXECUTION_TERMS = [
     "causas raiz estruturais",
     "conclusão final sincera",
     "conclusao final sincera",
+    "dar continuidade",
+    "retomar o desenvolvimento",
+    "continuar os trabalhos",
+    "executar as ações",
+    "executar as acoes",
+    "trabalhar de fato",
+    "fazer os especialistas trabalharem",
+    "acione os especialistas",
+    "acionar os especialistas",
+    "acione a equipe técnica",
+    "acione a equipe tecnica",
+    "acionar a equipe técnica",
+    "acionar a equipe tecnica",
 ]
 
 # =========================
