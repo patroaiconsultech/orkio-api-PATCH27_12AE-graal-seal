@@ -122,23 +122,17 @@ _AUDIT_TERMS = [
     "sugira melhorias por especialidade",
     "melhorias por especialidade",
     "sem executar nada",
-    "acione os especialistas",
-    "acione os especialistas",
     "acione a equipe técnica",
     "acione a equipe tecnica",
-    "equipe técnica",
-    "equipe tecnica",
+    "acione os especialistas",
     "especialistas técnicos",
     "especialistas tecnicos",
     "varredura no código",
     "varredura no codigo",
-    "varredura no repo",
-    "varredura no repositório",
-    "varredura no repositorio",
-    "continuar o trabalho anterior",
-    "dar continuidade ao trabalho",
-    "dar continuidade",
-    "de continuidade",
+    "dê continuidade ao trabalho",
+    "de continuidade ao trabalho",
+    "execute as ações necessárias",
+    "execute as acoes necessarias",
 ]
 
 _SPECIALIST_AUDIT_TERMS = [
@@ -149,13 +143,12 @@ _SPECIALIST_AUDIT_TERMS = [
     "relatório por especialidade",
     "relatorio por especialidade",
     "acione os especialistas",
-    "acione os especialistas",
     "acione a equipe técnica",
     "acione a equipe tecnica",
-    "especialistas técnicos",
-    "especialistas tecnicos",
     "equipe técnica",
     "equipe tecnica",
+    "especialistas técnicos",
+    "especialistas tecnicos",
 ]
 _AUDIT_EXECUTION_TERMS = [
     "prosseguir agora",
@@ -173,40 +166,17 @@ _AUDIT_EXECUTION_TERMS = [
     "conclusão final sincera",
     "conclusao final sincera",
     "acione os especialistas",
-    "acione os especialistas",
     "acione a equipe técnica",
     "acione a equipe tecnica",
-    "faça uma varredura no código",
-    "faça uma varredura no codigo",
-    "faca uma varredura no código",
-    "faca uma varredura no codigo",
+    "varredura no código",
+    "varredura no codigo",
     "dê continuidade",
     "de continuidade",
-    "dar continuidade ao trabalho",
     "execute as ações necessárias",
     "execute as acoes necessarias",
-    "proponha os ajustes necessários",
-    "proponha os ajustes necessarios",
-    "faça os ajustes necessários",
-    "faca os ajustes necessarios",
+    "execute as últimas orientações",
+    "execute as ultimas orientacoes",
 ]
-
-def _infer_include_frontend(text: str) -> bool:
-    return _contains_any(text, [
-        "frontend",
-        "front-end",
-        "web",
-        "react",
-        "vite",
-        "ui",
-        "ux",
-        "interface",
-        "painel",
-        "console",
-        "tsx",
-        ".tsx",
-        ".jsx",
-    ])
 
 # =========================
 # Runtime Scan Detection
@@ -266,8 +236,6 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "audit_mode": "specialist" if specialist_mode else "standard",
             "prepare_only": not wants_execution,
             "execution_depth": "dispatch" if wants_execution else "ready",
-            "include_frontend": _infer_include_frontend(txt),
-            "dispatch_specialists": bool(wants_execution),
         }
 
     if _contains_any(txt, _RUNTIME_SCAN_TERMS):
