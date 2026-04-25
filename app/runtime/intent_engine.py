@@ -101,14 +101,39 @@ _SQUAD_TERMS = [
 _AUDIT_TERMS = [
     "audite a plataforma",
     "auditoria da plataforma",
-    "scan da plataforma",
+    "auditoria interna",
     "analise a plataforma",
+    "análise da plataforma",
+    "analise interna",
+    "análise interna",
+    "diagnóstico técnico",
+    "diagnostico tecnico",
+    "autoconhecimento",
+    "scan da plataforma",
     "auditar plataforma",
     "audit platform",
     "platform audit",
     "sugira melhorias por especialidade",
     "melhorias por especialidade",
     "sem executar nada",
+    "modo consultivo",
+    "somente leitura",
+    "read-only",
+]
+
+_READ_ONLY_AUDIT_TERMS = [
+    "somente leitura",
+    "apenas leitura",
+    "modo consultivo",
+    "estritamente consultivo",
+    "read-only",
+    "only read",
+    "nenhuma execução operacional",
+    "nenhuma execucao operacional",
+    "nenhuma alteração estrutural",
+    "nenhuma alteracao estrutural",
+    "nenhuma publicação de mudança",
+    "nenhuma publicacao de mudanca",
 ]
 
 _SPECIALIST_AUDIT_TERMS = [
@@ -156,6 +181,19 @@ _PATCH_PLAN_TERMS = [
 ]
 
 
+
+def _is_consultive_audit_request(text: str) -> bool:
+    txt = _normalize(text)
+    if not txt:
+        return False
+    has_audit_terms = _contains_any(txt, _AUDIT_TERMS)
+    has_read_only_terms = _contains_any(txt, _READ_ONLY_AUDIT_TERMS)
+    has_diagnostic_shape = (
+        ("auditoria" in txt or "análise" in txt or "analise" in txt or "diagnóstico" in txt or "diagnostico" in txt)
+        and ("sistema" in txt or "plataforma" in txt or "arquitetura" in txt or "thread" in txt)
+    )
+    return bool(has_audit_terms or (has_read_only_terms and has_diagnostic_shape) or has_diagnostic_shape)
+
 def _detect_runtime_operation(text: str) -> Dict[str, Any]:
     txt = _normalize(text)
 
@@ -168,7 +206,7 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "data_source": "agents_api",
         }
 
-    if _contains_any(txt, _AUDIT_TERMS):
+    if _is_consultive_audit_request(txt):
         specialist_mode = _contains_any(txt, _SPECIALIST_AUDIT_TERMS)
         return {
             "kind": "platform_audit",
