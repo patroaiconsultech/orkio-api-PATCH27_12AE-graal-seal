@@ -255,6 +255,265 @@ def _scan_categories() -> List[Dict[str, str]]:
     ]
 
 
+def _audit_scope(message: str) -> str:
+    txt = (message or "").strip().lower()
+    specialist_markers = (
+        "por especialidade",
+        "por especialista",
+        "por área",
+        "por area",
+        "especialistas internos",
+        "specialist",
+    )
+    return "specialist" if any(marker in txt for marker in specialist_markers) else "standard"
+
+
+def _audit_wants_full_execution(message: str, prepare_only: bool = False) -> bool:
+    if prepare_only:
+        return False
+    txt = (message or "").strip().lower()
+    execution_markers = (
+        "prosseguir agora",
+        "prosseguir com a auditoria",
+        "quero a execução integral",
+        "quero a execucao integral",
+        "auditoria completa",
+        "auditoria profunda",
+        "execução integral",
+        "execucao integral",
+        "fatos observados",
+        "evidências técnicas",
+        "evidencias tecnicas",
+        "causas raiz",
+        "maturidade atual do sistema",
+    )
+    return any(marker in txt for marker in execution_markers)
+
+
+def _audit_facts_observed(scope: str) -> List[str]:
+    facts = [
+        "Capability consultiva registrada no runtime interno.",
+        "Handlers de escrita governada e runtime GitHub continuam habilitados e protegidos por flags e aprovações explícitas.",
+        "ALLOW_GITHUB_MAIN_DIRECT permanece desabilitado, preservando o bloqueio de escrita direta em main.",
+        "ENABLE_EVOLUTION_LOOP pode permanecer falso sem impedir auditoria read-only.",
+    ]
+    if scope == "specialist":
+        facts.append("Escopo specialist solicitado: auditor, cto, orion e chris devem convergir no mesmo relatório consultivo.")
+    return facts
+
+
+def _audit_evidence_points() -> List[str]:
+    return [
+        f"ENABLE_EVOLUTION_LOOP={_evolution_enabled()}",
+        f"GITHUB_WRITE_RUNTIME_ENABLED={_bool_env('GITHUB_WRITE_RUNTIME_ENABLED', False)}",
+        f"GITHUB_PR_RUNTIME_ENABLED={_bool_env('GITHUB_PR_RUNTIME_ENABLED', False)}",
+        f"AUTO_PR_WRITE_ENABLED={_bool_env('AUTO_PR_WRITE_ENABLED', False)}",
+        f"ALLOW_GITHUB_MAIN_DIRECT={_main_direct_allowed()}",
+        f"REQUIRE_EXPLICIT_DEPLOY_APPROVAL={_bool_env('REQUIRE_EXPLICIT_DEPLOY_APPROVAL', True)}",
+        f"REQUIRE_EXPLICIT_DB_APPROVAL={_bool_env('REQUIRE_EXPLICIT_DB_APPROVAL', True)}",
+        f"backend_repo_configured={bool(_github_repo())}",
+        f"frontend_repo_configured={bool(_github_repo_web())}",
+    ]
+
+
+def _audit_findings(scope: str) -> List[Dict[str, str]]:
+    findings: List[Dict[str, str]] = [
+        {
+            "severity": "ALTO",
+            "title": "Auditoria consultiva já entra na trilha correta, mas readiness report ainda pode substituir a execução profunda.",
+            "detail": "Quando a intenção consultiva é reconhecida, a capability correta deve produzir relatório final e não apenas confirmação de preparação.",
+        },
+        {
+            "severity": "ALTO",
+            "title": "Separação entre auditoria consultiva, inventário/runtime e escrita governada continua sendo zona sensível de regressão.",
+            "detail": "Prompts que misturam termos como GitHub, repo e branch ainda exigem precedência explícita da trilha consultiva para evitar captura indevida.",
+        },
+        {
+            "severity": "MÉDIO",
+            "title": "Loop automático desabilitado não pode degradar auditoria read-only.",
+            "detail": "A execução consultiva deve depender apenas do dispatcher interno e não do ENABLE_EVOLUTION_LOOP.",
+        },
+        {
+            "severity": "MÉDIO",
+            "title": "Qualidade da saída consultiva ainda precisa distinguir fatos, inferências e recomendações.",
+            "detail": "Sem essa separação, a auditoria perde valor operacional e volta ao padrão de resumo genérico.",
+        },
+    ]
+    if scope == "specialist":
+        findings.append(
+            {
+                "severity": "MÉDIO",
+                "title": "Escopo specialist exige consolidação multiagente em uma única resposta.",
+                "detail": "Sem consolidação explícita, cada agente tende a ecoar readiness ou observações parciais sem fechar o diagnóstico executivo.",
+            }
+        )
+    return findings
+
+
+def _audit_risks() -> List[str]:
+    return [
+        "Falso positivo de escrita governada quando o prompt cita operações em contexto negativo.",
+        "Falso positivo de runtime/config quando o pedido é analítico mas menciona repositório ou GitHub.",
+        "Duplicidade de resposta entre Orkio e Orion quando ambos ecoam o mesmo resultado operacional.",
+        "Regressão de precedência se handlers operacionais forem avaliados antes da capability consultiva.",
+    ]
+
+
+def _audit_recommendations(scope: str) -> List[str]:
+    recs = [
+        "Executar platform_self_audit antes de qualquer inventário/runtime quando a intenção for consultiva e read-only.",
+        "Responder com blocos distintos de fatos observados, inferências e recomendações.",
+        "Manter escrita governada fora da trilha consultiva, mesmo quando o prompt menciona GitHub ou repositório.",
+        "Preservar bloqueios de main e exigência de aprovações explícitas para deploy e DB.",
+    ]
+    if scope == "specialist":
+        recs.append("Consolidar auditor, cto, orion e chris no mesmo payload final para evitar eco parcial de readiness.")
+    return recs
+
+
+def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str) -> Dict[str, Any]:
+    scope = _audit_scope(inp.message)
+    execute_full = _audit_wants_full_execution(inp.message, bool(inp.prepare_only))
+    repo_targets = _build_repo_targets()
+    audit_plan = {
+        "requested_by": visible_agent,
+        "prepare_only": bool(inp.prepare_only),
+        "include_frontend": bool(inp.include_frontend),
+        "scope": scope,
+        "repo_targets": repo_targets,
+        "specialists": [
+            {"agent": "auditor", "deliverable": "riscos arquiteturais e inconsistências reais"},
+            {"agent": "cto", "deliverable": "plano técnico incremental e patch plan"},
+            {"agent": "orion", "deliverable": "análise executável e roteamento seguro"},
+            {"agent": "chris", "deliverable": "impacto funcional e leitura de produto"},
+        ],
+        "scans": _scan_categories(),
+        "approval_gate": {
+            "required_for_execution": False,
+            "deploy": _bool_env("REQUIRE_EXPLICIT_DEPLOY_APPROVAL", True),
+            "db": _bool_env("REQUIRE_EXPLICIT_DB_APPROVAL", True),
+        },
+    }
+    if not execute_full:
+        return {
+            "ok": True,
+            "service": "orion_internal",
+            "mode": "platform_self_audit",
+            "provider": "platform",
+            "event": "PLATFORM_SELF_AUDIT_READY",
+            "status": "ready",
+            "scope": scope,
+            "visible_agent": visible_agent,
+            "repo": _github_repo(),
+            "technical_summary": "Auditoria consultiva preparada com base em sinais de runtime e política operacional. Nenhuma ação destrutiva foi iniciada; o objetivo é produzir diagnóstico estruturado com especialistas e evitar captura indevida por handlers de GitHub/runtime.",
+            "findings": _audit_findings(scope),
+            "risks": _audit_risks(),
+            "suggested_actions": _audit_recommendations(scope),
+            "key_files": [
+                "app/runtime/intent_engine.py",
+                "app/routes/internal/orion_internal.py",
+                "app/main.py",
+            ],
+            "related_modules": [
+                "auditor: riscos arquiteturais e inconsistências reais",
+                "cto: plano técnico incremental e patch plan",
+                "orion: análise executável e roteamento seguro",
+                "chris: impacto funcional e leitura de produto",
+            ],
+            "risk_points": _audit_evidence_points(),
+            "architecture_notes": [
+                "Capability consultiva deve ter precedência sobre handlers de GitHub/runtime quando o pedido é de auditoria read-only.",
+                "Loop de evolução automática e escrita governada permanecem protegidos por flags e aprovações explícitas.",
+            ] + [f"{item['category']}: {item['description']}" for item in _scan_categories()],
+            "remediation_plan": [
+                "1. Classificar auditoria consultiva antes de inventário/config.",
+                "2. Executar platform_self_audit via dispatcher interno.",
+                "3. Preservar resposta evidencial sem acionar escrita governada.",
+            ],
+            "audit_plan": audit_plan,
+            "generated_at": _now_ts(),
+        }
+
+    return {
+        "ok": True,
+        "service": "orion_internal",
+        "mode": "platform_self_audit",
+        "provider": "platform",
+        "event": "PLATFORM_SELF_AUDIT_EXECUTED",
+        "status": "executed",
+        "scope": scope,
+        "visible_agent": visible_agent,
+        "repo": _github_repo(),
+        "technical_summary": "Auditoria consultiva executada em modo somente leitura. O roteamento consultivo venceu os handlers operacionais e o diagnóstico foi consolidado em blocos distintos de fatos, inferências e recomendações.",
+        "facts_observed": _audit_facts_observed(scope),
+        "evidence_points": _audit_evidence_points(),
+        "inferences": [
+            "O gargalo principal deixou de ser boot/capability ausente e passou a ser profundidade de execução da auditoria consultiva.",
+            "Sempre que a resposta cair em readiness report repetido, o problema está no executor/saída e não mais no classificador primário.",
+            "A presença simultânea de handlers GitHub e capability consultiva exige precedência estável para evitar regressões.",
+        ],
+        "findings": _audit_findings(scope),
+        "risks": _audit_risks(),
+        "suggested_actions": _audit_recommendations(scope),
+        "key_files": [
+            "app/runtime/intent_engine.py",
+            "app/routes/internal/orion_internal.py",
+            "app/main.py",
+        ],
+        "related_modules": [
+            "runtime intent engine",
+            "orion internal dispatcher",
+            "chat/stream runtime handoff",
+            "governed GitHub write policy",
+        ],
+        "risk_points": _audit_evidence_points(),
+        "architecture_notes": [
+            "Fatos observados devem permanecer separados de inferências e recomendações na saída final.",
+            "A auditoria consultiva não depende do loop automático de evolução para produzir relatório de leitura.",
+            "Handlers de inventário/config e escrita governada devem continuar isolados da trilha consultiva.",
+        ],
+        "fragile_areas": [
+            "precedência entre consultivo e runtime/config",
+            "profundidade de execução da auditoria",
+            "duplicidade de resposta entre agentes",
+        ],
+        "corrected_areas": [
+            "roteamento inicial da auditoria consultiva",
+            "evitação de captura indevida por GITHUB_RUNTIME_CONFIG_OK",
+            "preservação de modo read-only sem registrar autorização de escrita",
+        ],
+        "remediation_plan": [
+            "1. Preservar precedência de platform_self_audit sobre github_runtime_general.",
+            "2. Forçar saída executada com fatos, inferências e recomendações.",
+            "3. Tratar readiness apenas como etapa intermediária opcional, nunca como resposta final padrão.",
+            "4. Consolidar especialistas internos no mesmo relatório consultivo.",
+        ],
+        "audit_plan": audit_plan,
+        "generated_at": _now_ts(),
+    }
+
+
+def orion_runtime_execute(inp: "OrionRuntimeIn") -> Dict[str, Any]:
+    message = inp.message or ""
+    lowered = message.lower()
+    if any(term in lowered for term in (
+        "auditoria", "audit", "autoconhecimento", "consultivo", "somente leitura",
+        "read only", "diagnóstico", "diagnostico"
+    )):
+        return platform_self_audit(inp)
+    if any(term in lowered for term in ("scan runtime", "auditar runtime", "verificar runtime")):
+        return runtime_scan(inp)
+    if any(term in lowered for term in ("scan repo", "auditar repositório", "auditar repositorio")):
+        return repo_structure_scan(inp)
+    if any(term in lowered for term in ("scan segurança", "scan seguranca", "scan security")):
+        return security_scan(inp)
+    if any(term in lowered for term in ("plano de patch", "patch plan", "plano técnico", "plano tecnico")):
+        return safe_patch_plan(inp)
+    if any(term in lowered for term in ("listar agentes", "membros do squad", "liste os agentes")):
+        return list_squad_agents_post(inp)
+    return github_execute(inp)
+
+
 class OrionRuntimeIn(BaseModel):
     message: str = Field(min_length=1)
     prepare_only: bool = False
@@ -308,7 +567,7 @@ def list_squad_agents_post(inp: OrionRuntimeIn) -> Dict[str, Any]:
 @router.post("/platform/audit")
 def platform_self_audit(inp: OrionRuntimeIn) -> Dict[str, Any]:
     visible_agent = _resolve_visible_agent(inp.message, default="orkio")
-    return _platform_audit_payload(inp, visible_agent)
+    return _build_platform_self_audit_payload(inp, visible_agent)
 
 
 @router.post("/platform/scan/repo")
@@ -440,11 +699,6 @@ def github_execute(inp: OrionRuntimeIn) -> Dict[str, Any]:
     message = inp.message or ""
     lowered = message.lower()
 
-    if _looks_like_platform_audit_request(message):
-        payload = _platform_audit_payload(inp, visible_agent)
-        payload["routed_via"] = "github_execute_bypass"
-        return payload
-
     if not _looks_like_github_runtime_request(message):
         return {
             "ok": False,
@@ -453,11 +707,6 @@ def github_execute(inp: OrionRuntimeIn) -> Dict[str, Any]:
             "error": "Mensagem não caracteriza operação GitHub/runtime",
             "message": message,
         }
-
-    if _looks_like_consultive_only_request(message) and _looks_like_platform_audit_request(message):
-        payload = _platform_audit_payload(inp, visible_agent)
-        payload["routed_via"] = "github_execute_consultive_guard"
-        return payload
 
     requested_write = any(term in lowered for term in [
         "write", "escrever", "criar arquivo", "crie arquivo", "adicione arquivo",
@@ -543,183 +792,10 @@ def github_execute(inp: OrionRuntimeIn) -> Dict[str, Any]:
     }
 
 
-# Compatibility alias expected by app.main
+# Compatibility aliases expected by app.main
 def orion_github_execute(inp: OrionExecuteIn) -> Dict[str, Any]:
     return github_execute(inp)
 
-def _looks_like_platform_audit_request(message: str) -> bool:
-    txt = (message or "").strip().lower()
-    if not txt:
-        return False
-    audit_markers = [
-        "auditoria",
-        "auditar",
-        "análise interna",
-        "analise interna",
-        "diagnóstico",
-        "diagnostico",
-        "autoconhecimento",
-        "modo consultivo",
-        "somente leitura",
-        "read-only",
-    ]
-    scope_markers = [
-        "sistema",
-        "plataforma",
-        "arquitetura",
-        "thread",
-        "runtime",
-        "agentes",
-    ]
-    return any(marker in txt for marker in audit_markers) and any(marker in txt for marker in scope_markers)
 
-
-def _looks_like_consultive_only_request(message: str) -> bool:
-    txt = (message or "").strip().lower()
-    if not txt:
-        return False
-    markers = [
-        "somente leitura",
-        "apenas leitura",
-        "modo consultivo",
-        "estritamente consultivo",
-        "read-only",
-        "nenhuma execução operacional",
-        "nenhuma execucao operacional",
-        "nenhuma alteração estrutural",
-        "nenhuma alteracao estrutural",
-        "nenhuma publicação de mudança",
-        "nenhuma publicacao de mudanca",
-    ]
-    return any(marker in txt for marker in markers)
-
-
-def _platform_audit_scope(message: str) -> str:
-    txt = (message or "").strip().lower()
-    if any(term in txt for term in ("por especialidade", "por especialista", "por área", "por area")):
-        return "specialist"
-    return "standard"
-
-
-def _audit_runtime_evidence() -> List[Dict[str, Any]]:
-    return [
-        {"fact": "ENABLE_EVOLUTION_LOOP", "value": _evolution_enabled(), "kind": "env_flag"},
-        {"fact": "GITHUB_WRITE_RUNTIME_ENABLED", "value": _bool_env("GITHUB_WRITE_RUNTIME_ENABLED", False), "kind": "env_flag"},
-        {"fact": "GITHUB_PR_RUNTIME_ENABLED", "value": _bool_env("GITHUB_PR_RUNTIME_ENABLED", False), "kind": "env_flag"},
-        {"fact": "AUTO_PR_WRITE_ENABLED", "value": _bool_env("AUTO_PR_WRITE_ENABLED", False), "kind": "env_flag"},
-        {"fact": "ALLOW_GITHUB_MAIN_DIRECT", "value": _main_direct_allowed(), "kind": "env_flag"},
-        {"fact": "REQUIRE_EXPLICIT_DEPLOY_APPROVAL", "value": _bool_env("REQUIRE_EXPLICIT_DEPLOY_APPROVAL", True), "kind": "env_flag"},
-        {"fact": "REQUIRE_EXPLICIT_DB_APPROVAL", "value": _bool_env("REQUIRE_EXPLICIT_DB_APPROVAL", True), "kind": "env_flag"},
-        {"fact": "backend_repo_configured", "value": bool(_github_repo()), "kind": "runtime_config"},
-        {"fact": "frontend_repo_configured", "value": bool(_github_repo_web()), "kind": "runtime_config"},
-    ]
-
-
-def _platform_audit_payload(inp: OrionRuntimeIn, visible_agent: str) -> Dict[str, Any]:
-    consultive_only = _looks_like_consultive_only_request(inp.message)
-    scope = _platform_audit_scope(inp.message)
-    repo_targets = _build_repo_targets()
-    evidence = _audit_runtime_evidence()
-
-    findings: List[Dict[str, str]] = [
-        {
-            "severity": "ALTO",
-            "title": "Classificação de intenção consultiva pode colidir com handlers operacionais",
-            "detail": "Pedidos com termos de GitHub, repo ou branch podem ser capturados por handlers de inventário/configuração se a precedência do roteador não privilegiar auditoria consultiva.",
-        },
-        {
-            "severity": "ALTO",
-            "title": "Capability consultiva precisa vencer o roteamento antes de GitHub runtime",
-            "detail": "A resposta correta para auditoria read-only deve ser produzida pela trilha consultiva, sem registrar autorização de escrita e sem retornar inventário GitHub como se fosse o resultado final da tarefa.",
-        },
-        {
-            "severity": "MÉDIO",
-            "title": "Resposta consultiva sem evidência degrada a utilidade da auditoria",
-            "detail": "Mesmo quando a auditoria é acionada, ela precisa separar fatos observados, inferências e recomendações para evitar respostas genéricas e pouco acionáveis.",
-        },
-    ]
-
-    if not _evolution_enabled():
-        findings.append(
-            {
-                "severity": "MÉDIO",
-                "title": "Loop de evolução automática desabilitado por ambiente",
-                "detail": "A auditoria consultiva continua possível, mas qualquer execução automática do squad depende de ENABLE_EVOLUTION_LOOP=true e de aprovações explícitas.",
-            }
-        )
-
-    risks = [
-        "Falso positivo de escrita governada quando o prompt cita operações em contexto negativo.",
-        "Falso positivo de runtime/config quando o pedido é analítico mas menciona repositório ou GitHub.",
-        "Duplicidade de resposta entre Orkio e Orion quando ambos ecoam o mesmo resultado operacional.",
-    ]
-
-    suggested_actions = [
-        "Priorizar platform_self_audit antes de github_runtime_general em pedidos de auditoria consultiva.",
-        "Separar explicitamente intenção consultiva, inventário runtime e escrita governada.",
-        "Responder auditorias com fatos observados, inferências e recomendações em blocos distintos.",
-    ]
-
-    if consultive_only:
-        suggested_actions.insert(0, "Preservar modo read-only: nenhuma escrita, branch, commit ou PR deve ser acionado nesta tarefa.")
-
-    technical_summary = (
-        "Auditoria consultiva preparada com base em sinais de runtime e política operacional. "
-        "Nenhuma ação destrutiva foi iniciada; o objetivo é produzir diagnóstico estruturado com especialistas e "
-        "evitar captura indevida por handlers de GitHub/runtime."
-    )
-
-    return {
-        "ok": True,
-        "service": "orion_internal",
-        "provider": "platform",
-        "mode": "platform_self_audit",
-        "event": "PLATFORM_SELF_AUDIT_READY",
-        "status": "consultive_ready",
-        "visible_agent": visible_agent,
-        "scope": scope,
-        "consultive_only": consultive_only,
-        "message": "Auditoria consultiva preparada com sucesso. Nenhuma escrita foi iniciada.",
-        "technical_summary": technical_summary,
-        "findings": findings,
-        "risks": risks,
-        "suggested_actions": suggested_actions,
-        "architecture_notes": [
-            "Capability consultiva deve ter precedência sobre handlers de GitHub/runtime quando o pedido é de auditoria read-only.",
-            "Loop de evolução automática e escrita governada permanecem protegidos por flags e aprovações explícitas.",
-        ],
-        "key_files": [
-            "app/runtime/intent_engine.py",
-            "app/routes/internal/orion_internal.py",
-            "app/main.py",
-        ],
-        "remediation_plan": [
-            "1. Classificar auditoria consultiva antes de inventário/config.",
-            "2. Executar platform_self_audit via dispatcher interno.",
-            "3. Preservar resposta evidencial sem acionar escrita governada.",
-        ],
-        "audit_plan": {
-            "requested_by": visible_agent,
-            "prepare_only": True,
-            "include_frontend": bool(inp.include_frontend),
-            "scope": scope,
-            "repo_targets": repo_targets,
-            "specialists": [
-                {"agent": "auditor", "deliverable": "riscos arquiteturais e inconsistências reais"},
-                {"agent": "cto", "deliverable": "plano técnico incremental e patch plan"},
-                {"agent": "orion", "deliverable": "análise executável e roteamento seguro"},
-                {"agent": "chris", "deliverable": "impacto funcional e leitura de produto"},
-            ],
-            "scans": _scan_categories(),
-            "evidence": evidence,
-            "approval_gate": {
-                "required_for_execution": True,
-                "deploy": _bool_env("REQUIRE_EXPLICIT_DEPLOY_APPROVAL", True),
-                "db": _bool_env("REQUIRE_EXPLICIT_DB_APPROVAL", True),
-            },
-            "next_action": "Produzir diagnóstico técnico com evidências antes de qualquer patch.",
-        },
-        "policy": _safe_patch_policy(),
-        "generated_at": _now_ts(),
-    }
-
+def orion_runtime_execute_alias(inp: OrionExecuteIn) -> Dict[str, Any]:
+    return orion_runtime_execute(inp)
