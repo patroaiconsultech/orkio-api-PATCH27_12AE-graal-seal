@@ -5704,7 +5704,7 @@ def _is_github_access_request(user_text: str) -> bool:
     # Explicit governed-write requests/authorizations must bypass the generic
     # runtime inventory/config branch and flow into the governed write handler.
     try:
-        if _is_github_write_request_or_authorization(user_text):
+        if _is_explicit_github_create_branch_command(user_text) or _is_github_write_request_or_authorization(user_text):
             return False
     except Exception:
         pass
@@ -5955,18 +5955,12 @@ def _github_write_request_flags(user_text: str) -> Dict[str, Any]:
     if not txt:
         return requested
 
-    explicit_branch_command = bool(
-        re.search(
-            r"(crie\s+(?:uma\s+)?branch\b|create\s+(?:a\s+)?branch\b|github_create_branch|capability\s+github_create_branch)",
-            txt,
-            flags=re.IGNORECASE,
-        )
-    )
+    explicit_branch_command = _is_explicit_github_create_branch_command(txt)
     requested["create_file"] = bool(create_file_req) and not bool(update_file_req) and not bool(batch_req)
     requested["update_file"] = bool(update_file_req)
     requested["batch_commit"] = bool(batch_req)
     requested["open_pr"] = bool(pr_req) or bool(re.search(r"(abrir\s+pr|open\s+pr|pull\s+request)", low, flags=re.IGNORECASE))
-    requested["create_branch"] = bool(branch_req) and explicit_branch_command and not any(
+    requested["create_branch"] = explicit_branch_command and not any(
         [requested["create_file"], requested["update_file"], requested["batch_commit"], requested["open_pr"]]
     )
     requested["apply_patch"] = bool(
@@ -5995,7 +5989,12 @@ def _github_write_request_flags(user_text: str) -> Dict[str, Any]:
 def _is_github_write_request_or_authorization(user_text: str) -> bool:
     req = _github_write_request_flags(user_text)
     auth = _github_write_authorization_flags(user_text)
-    return bool(req.get("requested") or auth.get("grant") or auth.get("deny_execution"))
+    return bool(
+        req.get("requested")
+        or _is_explicit_github_create_branch_command(user_text)
+        or auth.get("grant")
+        or auth.get("deny_execution")
+    )
 
 def _github_write_policy_snapshot(
     *,
@@ -6106,6 +6105,10 @@ def _build_github_write_response_text(
     snapshot = _github_write_policy_snapshot(org=org, thread_id=thread_id, payload=payload, db=db)
     auth_flags = _github_write_authorization_flags(user_text)
     req_flags = _github_write_request_flags(user_text)
+    forced_branch_req = _extract_github_create_branch_request(user_text) or {}
+    if forced_branch_req or _is_explicit_github_create_branch_command(user_text):
+        req_flags["create_branch"] = True
+        req_flags["requested"] = True
     can_govern = bool(snapshot.get("can_govern"))
 
     if auth_flags.get("deny_execution"):
@@ -6165,7 +6168,7 @@ def _build_github_write_response_text(
 
     try:
         if req_flags.get("create_branch"):
-            branch_req = _extract_github_create_branch_request(user_text) or {}
+            branch_req = forced_branch_req or _extract_github_create_branch_request(user_text) or {}
             if branch_req.get("invalid"):
                 return "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: nome_de_branch_inseguro"
             branch_name = str(branch_req.get("branch") or "").strip() or _github_generated_branch_name("sandbox/sanity")
@@ -6678,6 +6681,20 @@ def _extract_github_create_file_request(user_text: str) -> Optional[Dict[str, st
     return payload
 
 
+
+def _is_explicit_github_create_branch_command(user_text: str) -> bool:
+    txt = (user_text or "").strip()
+    if not txt:
+        return False
+    return bool(
+        re.search(
+            r"((?:crie|create)\s+(?:uma\s+|a\s+)?branch\b|github_create_branch\b|capability\s+github_create_branch\b|^\s*branch\s*:\s*[A-Za-z0-9._/\-]{1,120}\s*$)",
+            txt,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+    )
+
+
 def _extract_github_create_branch_request(user_text: str) -> Optional[Dict[str, str]]:
     txt = (user_text or "").strip()
     if not txt:
@@ -6686,20 +6703,19 @@ def _extract_github_create_branch_request(user_text: str) -> Optional[Dict[str, 
     if "branch" not in low and "ramo" not in low and "github_create_branch" not in low:
         return None
 
-    patterns = [
-        r"crie uma branch chamada[: ]+([A-Za-z0-9._/\-]{1,120})",
-        r"crie a branch[: ]+([A-Za-z0-9._/\-]{1,120})",
-        r"crie no backend a branch[: ]+([A-Za-z0-9._/\-]{1,120})",
-        r"crie no frontend a branch[: ]+([A-Za-z0-9._/\-]{1,120})",
-        r"create a branch called[: ]+([A-Za-z0-9._/\-]{1,120})",
-        r"create branch[: ]+([A-Za-z0-9._/\-]{1,120})",
-        r"github_create_branch[: ]+([A-Za-z0-9._/\-]{1,120})",
-    ]
     branch = ""
+    patterns = [
+        r"(?:crie|create)(?:\s+(?:uma|a))?\s+branch\s+(?:chamada\s+)?([A-Za-z0-9._/\-]{1,120})(?=\s|$)",
+        r"crie\s+no\s+backend\s+a\s+branch\s+([A-Za-z0-9._/\-]{1,120})(?=\s|$)",
+        r"crie\s+no\s+frontend\s+a\s+branch\s+([A-Za-z0-9._/\-]{1,120})(?=\s|$)",
+        r"create\s+branch\s+([A-Za-z0-9._/\-]{1,120})(?=\s|$)",
+        r"create\s+a\s+branch\s+called\s+([A-Za-z0-9._/\-]{1,120})(?=\s|$)",
+        r"github_create_branch[: ]+([A-Za-z0-9._/\-]{1,120})(?=\s|$)",
+    ]
     for pat in patterns:
         m = re.search(pat, txt, flags=re.IGNORECASE)
         if m:
-            branch = (m.group(1) or "").strip()
+            branch = (m.group(1) or "").strip().rstrip(".,;:)")
             break
 
     if not branch:
@@ -8499,6 +8515,11 @@ def _dispatch_governed_github_write(
     snapshot = _github_write_policy_snapshot(org=org, thread_id=thread_id, payload=payload, db=db)
     auth_flags = _github_write_authorization_flags(user_text)
     req_flags = _github_write_request_flags(user_text)
+    forced_branch_req = _extract_github_create_branch_request(user_text) or {}
+    force_branch_dispatch = bool(forced_branch_req or _is_explicit_github_create_branch_command(user_text))
+    if force_branch_dispatch:
+        req_flags["create_branch"] = True
+        req_flags["requested"] = True
 
     if auth_flags.get("deny_execution") or auth_flags.get("grant") or not req_flags.get("requested"):
         return {
@@ -8564,10 +8585,19 @@ def _dispatch_governed_github_write(
             blocked = _ensure_allowed("create_branch")
             if blocked:
                 return blocked
-            branch_req = _extract_github_create_branch_request(user_text) or {}
+            branch_req = forced_branch_req or _extract_github_create_branch_request(user_text) or {}
             if branch_req.get("invalid"):
                 return {"text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: nome_de_branch_inseguro", "execution_result": None}
-            branch_name = str(branch_req.get("branch") or "").strip() or _github_generated_branch_name("sandbox/sanity")
+            branch_name = str(branch_req.get("branch") or "").strip()
+            if not branch_name:
+                m_branch_force = re.search(
+                    r"((?:crie|create)\s+(?:uma\s+|a\s+)?branch\s+)([A-Za-z0-9._/\-]{1,120})(?=\s|$)",
+                    user_text or "",
+                    flags=re.IGNORECASE,
+                )
+                if m_branch_force:
+                    branch_name = str(m_branch_force.group(2) or "").strip().rstrip(".,;:)")
+            branch_name = branch_name or _github_generated_branch_name("sandbox/sanity")
             normalized = _github_create_branch_capability(branch=branch_name, trace_id=trace)
 
         elif req_flags.get("create_file"):
@@ -9089,7 +9119,7 @@ def chat(
         should_execute_runtime = _should_execute_runtime_from_enrichment(runtime_enrichment)
         if blocked_reply is None:
             try:
-                if _is_github_write_request_or_authorization(inp.message):
+                if _is_explicit_github_create_branch_command(inp.message) or _is_github_write_request_or_authorization(inp.message):
                     governed_dispatch = _dispatch_governed_github_write(
                         org=org,
                         thread_id=getattr(inp, "thread_id", None),
@@ -12676,6 +12706,7 @@ async def chat_stream(
                     _forced_branch_req = _extract_github_create_branch_request(message)
                     force_governed_branch_dispatch = bool(
                         _forced_branch_req
+                        or _is_explicit_github_create_branch_command(message)
                         or re.search(r"github_create_branch|capability\s+github_create_branch", message or "", flags=re.IGNORECASE)
                     )
                 except Exception:
