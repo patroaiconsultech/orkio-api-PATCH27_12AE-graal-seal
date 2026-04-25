@@ -7200,7 +7200,7 @@ def _github_create_file_capability(*, path: str, content: str, branch: Optional[
             "message": (body_put.get("message") if isinstance(body_put, dict) else None) or "Falha ao criar arquivo no GitHub.",
         }
 
-    ok, resolved_branch, verify_body = _github_verify_file_exists(repo=repo, path=path, branch=branch)
+    ok, verified_path, verify_body = _github_verify_file_exists(repo=repo, path=path, branch=branch)
     if not ok:
         _github_log("GITHUB_WRITE_VERIFY_FAILED", repo=repo, branch=branch, path=path, trace_id=trace_id or "")
         return {
@@ -7213,17 +7213,34 @@ def _github_create_file_capability(*, path: str, content: str, branch: Optional[
             "message": f"Solicitação enviada ao GitHub, mas sem confirmação verificável do arquivo '{path}'.",
         }
 
-    verified_sha = ((((verify_body or {}).get("content") or {}).get("sha") or "").strip())
-    size_bytes = int((((verify_body or {}).get("content") or {}).get("size") or 0) or 0)
-    _github_log("GITHUB_WRITE_VERIFY_OK", repo=repo, branch=resolved_branch or branch, path=path, sha=verified_sha, trace_id=trace_id or "")
+    verify_dict = verify_body if isinstance(verify_body, dict) else {}
+    put_dict = body_put if isinstance(body_put, dict) else {}
+    put_content = put_dict.get("content") if isinstance(put_dict.get("content"), dict) else {}
+
+    verified_sha = str(
+        verify_dict.get("sha")
+        or put_content.get("sha")
+        or put_dict.get("sha")
+        or ""
+    ).strip()
+
+    size_candidate = verify_dict.get("size")
+    if size_candidate in (None, ""):
+        size_candidate = put_content.get("size")
+    try:
+        size_bytes = int(size_candidate or 0)
+    except Exception:
+        size_bytes = 0
+
+    _github_log("GITHUB_WRITE_VERIFY_OK", repo=repo, branch=branch, path=verified_path or path, sha=verified_sha, trace_id=trace_id or "")
     return {
         "handled": True,
         "success": True,
         "provider": "github",
         "event": "GITHUB_WRITE_VERIFY_OK",
         "repo": repo,
-        "branch": resolved_branch or branch,
-        "path": path,
+        "branch": branch,
+        "path": verified_path or path,
         "sha": verified_sha,
         "size_bytes": size_bytes,
         "trace_id": trace_id,
