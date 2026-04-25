@@ -371,6 +371,135 @@ def _audit_recommendations(scope: str) -> List[str]:
     return recs
 
 
+def _audit_root_causes(scope: str) -> List[str]:
+    causes = [
+        "O runtime mantinha classificação consultiva e handlers operacionais muito próximos semanticamente, o que favorecia captura indevida por inventário/config GitHub.",
+        "A capability consultiva existia, mas readiness report e execução profunda não estavam claramente separados no compositor final.",
+        "O sistema passou a depender de precedência implícita no roteador em vez de contrato explícito entre intenção, dispatcher e formato de saída.",
+    ]
+    if scope == "specialist":
+        causes.append("A consolidação multiagente não estava materializada em um relatório único; cada trilha podia devolver apenas confirmação operacional parcial.")
+    return causes
+
+
+def _audit_intent_misclassification_points() -> List[str]:
+    return [
+        "Prompts consultivos com termos como GitHub, repo, branch ou arquivo em contexto analítico podiam ser classificados como runtime/config.",
+        "Prompts com negação operacional ('não criar', 'não abrir PR') ainda continham gatilhos de escrita capazes de acionar políticas indevidas.",
+        "A ausência de um marcador forte de read-only no pacote de intenção facilitava regressões entre análise e operação.",
+    ]
+
+
+def _audit_routing_error_points() -> List[str]:
+    return [
+        "Antes do ajuste, pedidos de auditoria consultiva podiam terminar em GITHUB_RUNTIME_CONFIG_OK em vez de cair na capability consultiva.",
+        "A trilha consultiva precisava vencer github_runtime_general e handlers afins antes da renderização da resposta final.",
+        "A execução final passou a depender do dispatcher consultivo interno, e não do loop automático de evolução.",
+    ]
+
+
+def _audit_execution_response_mismatches() -> List[str]:
+    return [
+        "Houve fases em que a execução interna era correta, mas a resposta final ao usuário saía como readiness report ou snapshot de runtime/config.",
+        "A capability podia estar registrada e pronta, porém a superfície de resposta ainda não entregava a auditoria completa pedida.",
+        "A diferença entre 'executado' e 'composto/formatado corretamente' era a principal fonte do falso negativo funcional remanescente.",
+    ]
+
+
+def _audit_agent_duplication_points(scope: str) -> List[str]:
+    points = [
+        "Orkio e Orion podem ecoar o mesmo resultado operacional na thread, gerando duplicidade de percepção mesmo quando o backend executa apenas uma trilha útil.",
+        "Sem consolidação explícita, readiness e recibos operacionais de agentes diferentes competem com o relatório consultivo.",
+    ]
+    if scope == "specialist":
+        points.append("Escopo specialist amplia o risco de eco textual entre auditor, cto, orion e chris se o compositor final não unificar as saídas.")
+    return points
+
+
+def _audit_technical_debts(scope: str) -> Dict[str, List[str]]:
+    debts = {
+        "critical": [
+            "Ausência histórica de contrato rígido entre intenção consultiva e handlers operacionais, com impacto direto em classificação e roteamento.",
+        ],
+        "high": [
+            "Compositor de saída consultiva ainda dependia de payload parcial, o que reduzia a profundidade do diagnóstico entregue.",
+            "Precedência entre platform_self_audit e github_runtime_general continua sendo ponto de regressão de alto impacto.",
+        ],
+        "medium": [
+            "Duplicidade de resposta entre agentes na thread ainda polui percepção operacional e leitura de sucesso/erro.",
+            "Campos de evidência e conclusão ainda precisam permanecer sincronizados com os blocos pedidos pelo usuário.",
+        ],
+        "low": [
+            "Nomenclatura de modos/eventos consultivos ainda pode ser refinada para diferenciar readiness intermediário de relatório final.",
+        ],
+    }
+    if scope == "specialist":
+        debts["medium"].append("Consolidação multiagente ainda é sintética; não há pesos diferenciados por especialista no payload final.")
+    return debts
+
+
+def _audit_preserve_items() -> List[str]:
+    return [
+        "Preservar bloqueio de escrita direta em main com ALLOW_GITHUB_MAIN_DIRECT=False.",
+        "Preservar separação entre escrita governada e auditoria read-only.",
+        "Preservar capability self_knowledge_app registrada no boot do runtime.",
+        "Preservar exigência de aprovações explícitas para deploy e DB fora da trilha consultiva.",
+    ]
+
+
+def _audit_simplify_items() -> List[str]:
+    return [
+        "Unificar a superfície de saída consultiva em um único relatório final, evitando readiness repetido.",
+        "Simplificar a fronteira entre classificação consultiva, inventário/runtime e escrita governada.",
+        "Concentrar a composição textual da auditoria em um único compositor para evitar blocos parciais espalhados.",
+    ]
+
+
+def _audit_correction_order() -> List[str]:
+    return [
+        "1. Preservar precedência estável de platform_self_audit sobre github_runtime_general.",
+        "2. Manter execução consultiva profunda desacoplada do ENABLE_EVOLUTION_LOOP.",
+        "3. Consolidar relatório final completo com 14 blocos obrigatórios.",
+        "4. Reduzir duplicidade de resposta entre Orkio e Orion na thread.",
+        "5. Só depois refinar a qualidade analítica por especialista.",
+    ]
+
+
+def _audit_maturity_conclusion(scope: str) -> str:
+    base = (
+        "O sistema saiu do estágio de falha de roteamento consultivo e entrou em maturidade intermediária: "
+        "a capability correta é registrada, ativada e executada, mas a qualidade final da auditoria ainda depende "
+        "de um compositor consistente para entregar diagnóstico completo sem eco parcial."
+    )
+    if scope == "specialist":
+        return base + " No escopo specialist, a maturidade ainda é limitada pela consolidação multiagente sintética, não por ausência de capability."
+    return base
+
+
+def _audit_specialist_views(scope: str) -> Dict[str, List[str]]:
+    views: Dict[str, List[str]] = {
+        "auditor": [
+            "Classificação consultiva e handlers operacionais continuam sendo a principal zona de regressão arquitetural.",
+            "Duplicidade de resposta entre agentes permanece como ruído operacional real.",
+        ],
+        "cto": [
+            "A correção estrutural mais importante foi desacoplar auditoria read-only do loop automático e dar precedência explícita à capability consultiva.",
+            "O próximo risco técnico não é boot nem capability ausente; é composição incompleta da resposta final.",
+        ],
+        "orion": [
+            "O dispatcher consultivo agora executa; o foco passa a ser transformar payload executado em relatório final integral.",
+            "Precedência estável entre intent engine, dispatcher e renderização precisa ser preservada em patches futuros.",
+        ],
+        "chris": [
+            "Do ponto de vista de produto, readiness repetido degrada confiança do usuário mesmo quando o backend faz a coisa certa.",
+            "A percepção de maturidade melhora quando a resposta final traduz corretamente o que já foi executado internamente.",
+        ],
+    }
+    if scope != "specialist":
+        views.pop("chris", None)
+    return views
+
+
 def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str) -> Dict[str, Any]:
     scope = _audit_scope(inp.message)
     execute_full = _audit_wants_full_execution(inp.message, bool(inp.prepare_only))
@@ -442,14 +571,15 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         "event": "PLATFORM_SELF_AUDIT_EXECUTED",
         "status": "executed",
         "scope": scope,
+        "report_format": "full_audit_v1",
         "visible_agent": visible_agent,
         "repo": _github_repo(),
-        "technical_summary": "Auditoria consultiva executada em modo somente leitura. O roteamento consultivo venceu os handlers operacionais e o diagnóstico foi consolidado em blocos distintos de fatos, inferências e recomendações.",
+        "technical_summary": "Auditoria consultiva executada em modo somente leitura. O roteamento consultivo venceu os handlers operacionais e o resultado agora é composto como relatório final completo, não apenas readiness operacional.",
         "facts_observed": _audit_facts_observed(scope),
         "evidence_points": _audit_evidence_points(),
         "inferences": [
-            "O gargalo principal deixou de ser boot/capability ausente e passou a ser profundidade de execução da auditoria consultiva.",
-            "Sempre que a resposta cair em readiness report repetido, o problema está no executor/saída e não mais no classificador primário.",
+            "O gargalo principal deixou de ser boot/capability ausente e passou a ser composição e profundidade da saída consultiva.",
+            "Sempre que a resposta cair em readiness report repetido, o problema está no compositor/saída e não mais no classificador primário.",
             "A presença simultânea de handlers GitHub e capability consultiva exige precedência estável para evitar regressões.",
         ],
         "findings": _audit_findings(scope),
@@ -481,13 +611,26 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
             "roteamento inicial da auditoria consultiva",
             "evitação de captura indevida por GITHUB_RUNTIME_CONFIG_OK",
             "preservação de modo read-only sem registrar autorização de escrita",
+            "execução consultiva profunda sem depender do loop automático",
         ],
         "remediation_plan": [
             "1. Preservar precedência de platform_self_audit sobre github_runtime_general.",
-            "2. Forçar saída executada com fatos, inferências e recomendações.",
+            "2. Forçar saída executada com relatório final completo.",
             "3. Tratar readiness apenas como etapa intermediária opcional, nunca como resposta final padrão.",
             "4. Consolidar especialistas internos no mesmo relatório consultivo.",
+            "5. Reduzir duplicidade de resposta entre agentes na superfície da thread.",
         ],
+        "specialist_views": _audit_specialist_views(scope),
+        "root_causes": _audit_root_causes(scope),
+        "intent_misclassification_points": _audit_intent_misclassification_points(),
+        "routing_error_points": _audit_routing_error_points(),
+        "execution_response_mismatches": _audit_execution_response_mismatches(),
+        "agent_duplication_points": _audit_agent_duplication_points(scope),
+        "technical_debts_by_severity": _audit_technical_debts(scope),
+        "preserve_items": _audit_preserve_items(),
+        "simplify_items": _audit_simplify_items(),
+        "correction_order": _audit_correction_order(),
+        "maturity_conclusion": _audit_maturity_conclusion(scope),
         "audit_plan": audit_plan,
         "generated_at": _now_ts(),
     }
