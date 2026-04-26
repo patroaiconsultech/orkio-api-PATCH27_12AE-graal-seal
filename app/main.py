@@ -9328,6 +9328,26 @@ def _pick_runtime_primary_agent(target_agents: List[Any], requested_names: Optio
 
     return target_agents[0]
 
+
+def _agent_attr(ag: Any, field: str, default: Any = None) -> Any:
+    if ag is None:
+        return default
+    try:
+        if isinstance(ag, dict):
+            value = ag.get(field)
+        else:
+            value = getattr(ag, field, None)
+        return default if value in (None, "") else value
+    except Exception:
+        return default
+
+
+def _resolve_runtime_final_signer(current_agent: Any, runtime_primary_agent: Any, should_execute_runtime: bool) -> Any:
+    """Source of truth for the visible/persisted signer after execution-first collapse."""
+    if should_execute_runtime and runtime_primary_agent is not None:
+        return runtime_primary_agent
+    return current_agent
+
 def _track_execution_event(
     db: Session,
     *,
@@ -9573,6 +9593,10 @@ def chat(
                 if runtime_primary_agent is not None:
                     dag_snapshot_live["runtime_primary_agent_id"] = getattr(runtime_primary_agent, "id", None)
                     dag_snapshot_live["runtime_primary_agent_name"] = getattr(runtime_primary_agent, "name", None)
+dag_snapshot_live["preferred_visible_node"] = _agent_attr(runtime_primary_agent, "name", None)
+dag_snapshot_live["visible_node"] = _agent_attr(runtime_primary_agent, "name", None)
+dag_snapshot_live["final_signer_agent_id"] = _agent_attr(runtime_primary_agent, "id", None)
+dag_snapshot_live["final_signer_agent_name"] = _agent_attr(runtime_primary_agent, "name", None)
                 runtime_enrichment["dag_snapshot"] = dag_snapshot_live
         except Exception:
             pass
@@ -9631,6 +9655,12 @@ def chat(
 
         # STAB: _build_agent_prompt — role-injection anti-impersonation
         user_msg = _build_agent_prompt(agent, inp.message, has_team, mention_tokens)
+
+        final_signer_agent = _resolve_runtime_final_signer(agent, runtime_primary_agent, should_execute_runtime)
+        final_signer_agent_id = _agent_attr(final_signer_agent, "id", None)
+        final_signer_agent_name = _agent_attr(final_signer_agent, "name", None) or (_agent_attr(agent, "name", None) or "Agent")
+        final_signer_voice_id = resolve_agent_voice(final_signer_agent) if final_signer_agent else None
+        final_signer_avatar_url = _agent_attr(final_signer_agent, "avatar_url", None)
 
         effective_system_prompt = (agent.system_prompt if agent else None)
         runtime_overlay = (runtime_enrichment.get("system_overlay") if runtime_enrichment else "") or ""
@@ -9743,14 +9773,14 @@ def chat(
             thread_id=tid,
             role="assistant",
             content=answer,
-            agent_id=(agent.id if agent else None),
-            agent_name=(agent.name if agent else None),
+            agent_id=final_signer_agent_id,
+            agent_name=final_signer_agent_name,
             created_at=now_ts(),
         )
         db.add(m_ass)
         db.commit()
         try:
-            audit(db, org, user.get('sub'), 'chat.message.generated', request_id='chat', path='/api/chat', status_code=200, latency_ms=0, meta={'thread_id': tid, 'agent_id': (agent.id if agent else None)})
+            audit(db, org, user.get('sub'), 'chat.message.generated', request_id='chat', path='/api/chat', status_code=200, latency_ms=0, meta={'thread_id': tid, 'agent_id': final_signer_agent_id, 'agent_name': final_signer_agent_name})
         except Exception:
             pass
 
@@ -9758,10 +9788,10 @@ def chat(
         _trace = getattr(inp, "trace_id", None) or ""
         logger.info(
             "v2v_chat_ok trace_id=%s org=%s thread=%s agent=%s chars=%d",
-            _trace, org, tid, (agent.name if agent else "none"), len(answer),
+            _trace, org, tid, (final_signer_agent_name or "none"), len(answer),
         )
         # STAB: _track_cost — unificado para /api/chat, /api/chat/stream e V2V
-        tracked_total_usd = _track_cost(db, org, uid, tid, m_ass.id, agent, ans_obj, user_msg, answer, streaming=False)
+        tracked_total_usd = _track_cost(db, org, uid, tid, m_ass.id, final_signer_agent, ans_obj, user_msg, answer, streaming=False)
         try:
             _wallet_debit_for_chat_usage(
                 db,
@@ -9772,7 +9802,7 @@ def chat(
                 action_key=f"chat:{m_ass.id}",
                 thread_id=tid,
                 message_id=m_ass.id,
-                agent_id=(agent.id if agent else None),
+                agent_id=final_signer_agent_id,
                 usage_meta={"client_message_id": getattr(inp, "client_message_id", None), "streaming": False},
             )
         except HTTPException:
@@ -9797,7 +9827,7 @@ def chat(
                 pass
         try:
             audit(db, org, uid, 'cost.event.recorded', request_id='cost', path='/api/chat', status_code=200, latency_ms=0,
-                  meta={"thread_id": tid, "agent_id": (agent.id if agent else None)})
+                  meta={"thread_id": tid, "agent_id": final_signer_agent_id, "agent_name": final_signer_agent_name})
         except Exception:
             logger.exception("AUDIT_COST_FAILED")
 
@@ -9807,7 +9837,7 @@ def chat(
             answers.append(answer)
 
         # STAB: last_agent sempre atualizado (garante ChatOut com metadados corretos)
-        last_agent = agent
+        last_agent = final_signer_agent or agent
 
         # Keep citations from first agent
         if citations and not all_citations:
@@ -13047,6 +13077,10 @@ async def chat_stream(
             if runtime_primary_agent is not None:
                 dag_snapshot_live["runtime_primary_agent_id"] = runtime_primary_agent.get("id") if isinstance(runtime_primary_agent, dict) else getattr(runtime_primary_agent, "id", None)
                 dag_snapshot_live["runtime_primary_agent_name"] = runtime_primary_agent.get("name") if isinstance(runtime_primary_agent, dict) else getattr(runtime_primary_agent, "name", None)
+dag_snapshot_live["preferred_visible_node"] = _agent_attr(runtime_primary_agent, "name", None)
+dag_snapshot_live["visible_node"] = _agent_attr(runtime_primary_agent, "name", None)
+dag_snapshot_live["final_signer_agent_id"] = _agent_attr(runtime_primary_agent, "id", None)
+dag_snapshot_live["final_signer_agent_name"] = _agent_attr(runtime_primary_agent, "name", None)
             runtime_enrichment["dag_snapshot"] = dag_snapshot_live
     except Exception:
         pass
@@ -13134,6 +13168,11 @@ async def chat_stream(
                 ag_name = ag.get("name") or "Agent"
                 ag_voice_id = ag.get("voice_id")
                 ag_avatar_url = ag.get("avatar_url")
+                final_signer_agent = _resolve_runtime_final_signer(ag, runtime_primary_agent, should_execute_runtime)
+                final_signer_agent_id = _agent_attr(final_signer_agent, "id", ag_id)
+                final_signer_agent_name = _agent_attr(final_signer_agent, "name", ag_name) or ag_name
+                final_signer_voice_id = _agent_attr(final_signer_agent, "voice_id", ag_voice_id)
+                final_signer_avatar_url = _agent_attr(final_signer_agent, "avatar_url", ag_avatar_url)
                 ag_system_prompt = (ag.get("system_prompt") or "").strip()
                 ag_model = ag.get("model") or None
                 ag_temperature_raw = ag.get("temperature")
@@ -13203,8 +13242,8 @@ async def chat_stream(
                         "Carregando contexto operacional",
                         kind="system",
                         scope="agent",
-                        agent_id=ag_id,
-                        agent_name=ag_name,
+                        agent_id=final_signer_agent_id,
+                        agent_name=final_signer_agent_name,
                         started_monotonic=agent_started_monotonic,
                         detail=f"RAG {'ativo' if ag_rag_enabled else 'desativado'} com top_k {effective_top_k}.",
                     )
@@ -13224,8 +13263,8 @@ async def chat_stream(
                         "Contexto preparado",
                         kind="system",
                         scope="agent",
-                        agent_id=ag_id,
-                        agent_name=ag_name,
+                        agent_id=final_signer_agent_id,
+                        agent_name=final_signer_agent_name,
                         started_monotonic=agent_started_monotonic,
                         detail=(
                             f"{len(citations)} referência(s) recuperada(s) para apoiar a resposta."
@@ -13543,8 +13582,8 @@ async def chat_stream(
                         "Persistindo resposta do agente",
                         kind="system",
                         scope="agent",
-                        agent_id=ag_id,
-                        agent_name=ag_name,
+                        agent_id=final_signer_agent_id,
+                        agent_name=final_signer_agent_name,
                         started_monotonic=agent_started_monotonic,
                         detail="Gravando resposta no histórico e preparando trilha econômica.",
                     )
@@ -13556,8 +13595,8 @@ async def chat_stream(
                         thread_id=tid,
                         role="assistant",
                         content=ans,
-                        agent_id=ag_id,
-                        agent_name=ag_name,
+                        agent_id=final_signer_agent_id,
+                        agent_name=final_signer_agent_name,
                         created_at=m_ass_created_at,
                     )
                     db.add(m_ass)
@@ -13573,7 +13612,7 @@ async def chat_stream(
                             uid=uid,
                             tid=tid,
                             message_id=m_ass_id,
-                            agent=type("StreamAgentProxy", (), {"id": ag_id, "name": ag_name})(),
+                            agent=type("StreamAgentProxy", (), {"id": final_signer_agent_id, "name": final_signer_agent_name})(),
                             ans_obj=ans_obj,
                             user_msg=user_msg if blocked_reply is None else blocked_reply,
                             answer=ans,
@@ -13589,8 +13628,8 @@ async def chat_stream(
                             action_key=f"chat_stream:{m_ass_id}",
                             thread_id=tid,
                             message_id=m_ass_id,
-                            agent_id=ag_id,
-                            usage_meta={"trace_id": trace_id, "client_message_id": client_message_id, "streaming": True},
+                            agent_id=final_signer_agent_id,
+                            usage_meta={"trace_id": trace_id, "client_message_id": client_message_id, "streaming": True, "final_signer_agent_name": final_signer_agent_name},
                         )
                         try:
                             yield sse_execution(
@@ -13683,8 +13722,8 @@ async def chat_stream(
                         f"{ag_name} concluiu a etapa",
                         kind="done",
                         scope="agent",
-                        agent_id=ag_id,
-                        agent_name=ag_name,
+                        agent_id=final_signer_agent_id,
+                        agent_name=final_signer_agent_name,
                         started_monotonic=agent_started_monotonic,
                         detail="Resposta persistida e stream parcial finalizado.",
                     )
@@ -13699,7 +13738,7 @@ async def chat_stream(
                 except Exception:
                     pass
 
-                previous_agent_payload = {"id": ag_id, "name": ag_name}
+                previous_agent_payload = {"id": final_signer_agent_id, "name": final_signer_agent_name}
 
             final_runtime_enrichment = runtime_enrichment if isinstance(runtime_enrichment, dict) else {}
             try:
