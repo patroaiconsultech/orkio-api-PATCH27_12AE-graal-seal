@@ -9593,10 +9593,10 @@ def chat(
                 if runtime_primary_agent is not None:
                     dag_snapshot_live["runtime_primary_agent_id"] = getattr(runtime_primary_agent, "id", None)
                     dag_snapshot_live["runtime_primary_agent_name"] = getattr(runtime_primary_agent, "name", None)
-dag_snapshot_live["preferred_visible_node"] = _agent_attr(runtime_primary_agent, "name", None)
-dag_snapshot_live["visible_node"] = _agent_attr(runtime_primary_agent, "name", None)
-dag_snapshot_live["final_signer_agent_id"] = _agent_attr(runtime_primary_agent, "id", None)
-dag_snapshot_live["final_signer_agent_name"] = _agent_attr(runtime_primary_agent, "name", None)
+                    dag_snapshot_live["preferred_visible_node"] = _agent_attr(runtime_primary_agent, "name", None)
+                    dag_snapshot_live["visible_node"] = _agent_attr(runtime_primary_agent, "name", None)
+                    dag_snapshot_live["final_signer_agent_id"] = _agent_attr(runtime_primary_agent, "id", None)
+                    dag_snapshot_live["final_signer_agent_name"] = _agent_attr(runtime_primary_agent, "name", None)
                 runtime_enrichment["dag_snapshot"] = dag_snapshot_live
         except Exception:
             pass
@@ -13077,10 +13077,10 @@ async def chat_stream(
             if runtime_primary_agent is not None:
                 dag_snapshot_live["runtime_primary_agent_id"] = runtime_primary_agent.get("id") if isinstance(runtime_primary_agent, dict) else getattr(runtime_primary_agent, "id", None)
                 dag_snapshot_live["runtime_primary_agent_name"] = runtime_primary_agent.get("name") if isinstance(runtime_primary_agent, dict) else getattr(runtime_primary_agent, "name", None)
-dag_snapshot_live["preferred_visible_node"] = _agent_attr(runtime_primary_agent, "name", None)
-dag_snapshot_live["visible_node"] = _agent_attr(runtime_primary_agent, "name", None)
-dag_snapshot_live["final_signer_agent_id"] = _agent_attr(runtime_primary_agent, "id", None)
-dag_snapshot_live["final_signer_agent_name"] = _agent_attr(runtime_primary_agent, "name", None)
+                dag_snapshot_live["preferred_visible_node"] = _agent_attr(runtime_primary_agent, "name", None)
+                dag_snapshot_live["visible_node"] = _agent_attr(runtime_primary_agent, "name", None)
+                dag_snapshot_live["final_signer_agent_id"] = _agent_attr(runtime_primary_agent, "id", None)
+                dag_snapshot_live["final_signer_agent_name"] = _agent_attr(runtime_primary_agent, "name", None)
             runtime_enrichment["dag_snapshot"] = dag_snapshot_live
     except Exception:
         pass
