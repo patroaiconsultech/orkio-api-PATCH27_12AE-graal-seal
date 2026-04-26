@@ -9264,6 +9264,24 @@ def _apply_chat_anti_echo(answer: str, user_message: str) -> str:
         "Nenhuma ação externa foi assumida como concluída."
     )
 
+def _should_skip_assistant_persist(answer: str, execution_result: Optional[Dict[str, Any]] = None) -> bool:
+    txt = (answer or "").strip()
+    if not txt:
+        return True
+    if execution_result and bool(execution_result.get("success")):
+        return False
+    anti_echo_fallback = (
+        "Recebi a instrução, mas ainda não obtive uma saída real do agente para registrar sem eco da sua própria mensagem. "
+        "Nenhuma ação externa foi assumida como concluída."
+    )
+    truthful_execution_fallback = (
+        "Não tenho confirmação operacional de que essa ação externa foi realmente executada. "
+        "Posso descrever o plano, preparar o patch ou orientar a execução, mas não devo afirmar "
+        "criação de arquivo, commit, push, branch ou alteração em repositório sem evidência concreta "
+        "de execução e retorno do provedor."
+    )
+    return txt in {anti_echo_fallback, truthful_execution_fallback}
+
 def _pick_runtime_primary_agent(target_agents: List[Any], requested_names: Optional[List[str]] = None) -> Optional[Any]:
     if not target_agents:
         return None
@@ -13474,18 +13492,18 @@ async def chat_stream(
                 ans = _apply_truthful_execution_mode((ans_obj.get("text") or "").strip(), execution_result=execution_result)
                 ans = _apply_chat_anti_echo(ans, message)
 
-                # PATCH27_12AK — não persistir eco/fallback repetido por agente
-                if _looks_like_user_instruction_echo(ans, message) and not (execution_result and execution_result.get("success")):
+                # PATCH27_12AO — não persistir fallback final sem execução real
+                if _should_skip_assistant_persist(ans, execution_result=execution_result):
                     try:
                         yield sse_execution(
-                            "assistant_skipped_echo",
+                            "assistant_persist_skipped",
                             f"{ag_name} sem saída própria para persistir",
                             kind="warning",
                             scope="agent",
                             agent_id=ag_id,
                             agent_name=ag_name,
                             started_monotonic=agent_started_monotonic,
-                            detail="Resposta eco/fallback descartada para evitar duplicação entre agentes.",
+                            detail="Fallback/anti-echo sem execution_result.success não será gravado no histórico.",
                         )
                         yield sse_event(
                             "agent_done",
