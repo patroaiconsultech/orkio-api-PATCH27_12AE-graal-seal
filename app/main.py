@@ -9268,8 +9268,7 @@ def _should_skip_assistant_persist(answer: str, execution_result: Optional[Dict[
     txt = (answer or "").strip()
     if not txt:
         return True
-    if execution_result and bool(execution_result.get("success")):
-        return False
+
     anti_echo_fallback = (
         "Recebi a instrução, mas ainda não obtive uma saída real do agente para registrar sem eco da sua própria mensagem. "
         "Nenhuma ação externa foi assumida como concluída."
@@ -9280,7 +9279,26 @@ def _should_skip_assistant_persist(answer: str, execution_result: Optional[Dict[
         "criação de arquivo, commit, push, branch ou alteração em repositório sem evidência concreta "
         "de execução e retorno do provedor."
     )
-    return txt in {anti_echo_fallback, truthful_execution_fallback}
+
+    def _norm(v: str) -> str:
+        return re.sub(r"\s+", " ", str(v or "").strip().lower())
+
+    txt_norm = _norm(txt)
+    anti_norm = _norm(anti_echo_fallback)
+    truthful_norm = _norm(truthful_execution_fallback)
+
+    # PATCH27_12AP:
+    # Nunca persistir os fallbacks estruturais, mesmo que algum execution_result
+    # venha marcado como success por engano ou sucesso parcial.
+    if txt_norm == anti_norm or txt_norm == truthful_norm:
+        return True
+    if anti_norm in txt_norm or truthful_norm in txt_norm:
+        return True
+
+    if execution_result and bool(execution_result.get("success")):
+        return False
+
+    return False
 
 def _pick_runtime_primary_agent(target_agents: List[Any], requested_names: Optional[List[str]] = None) -> Optional[Any]:
     if not target_agents:
@@ -13503,7 +13521,7 @@ async def chat_stream(
                             agent_id=ag_id,
                             agent_name=ag_name,
                             started_monotonic=agent_started_monotonic,
-                            detail="Fallback/anti-echo sem execution_result.success não será gravado no histórico.",
+                            detail="Fallback estrutural do assistant não será gravado no histórico, mesmo com success inconsistente.",
                         )
                         yield sse_event(
                             "agent_done",
