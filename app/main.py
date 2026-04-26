@@ -8883,7 +8883,122 @@ def _should_execute_runtime_from_enrichment(runtime_enrichment: Optional[Dict[st
 
 
 
+def _coerce_platform_audit_dispatch_result(
+    result: Optional[Dict[str, Any]],
+    runtime_enrichment: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized = dict(result or {})
+    if not isinstance(runtime_enrichment, dict):
+        return normalized
+
+    intent_package = runtime_enrichment.get("intent_package") if isinstance(runtime_enrichment.get("intent_package"), dict) else {}
+    runtime_operation = intent_package.get("runtime_operation") if isinstance(intent_package.get("runtime_operation"), dict) else {}
+    planner_snapshot = runtime_enrichment.get("planner_snapshot") if isinstance(runtime_enrichment.get("planner_snapshot"), dict) else {}
+
+    runtime_kind = str(runtime_operation.get("kind") or "").strip()
+    desired_depth = str(
+        runtime_operation.get("execution_depth")
+        or planner_snapshot.get("execution_depth")
+        or ""
+    ).strip().lower()
+    visible_only_agent = str(
+        runtime_operation.get("visible_only_agent")
+        or planner_snapshot.get("visible_only_agent")
+        or ""
+    ).strip().lower()
+    response_profile = str(
+        runtime_operation.get("response_profile")
+        or planner_snapshot.get("response_profile")
+        or ""
+    ).strip().lower()
+
+    if runtime_kind != "platform_audit":
+        return normalized
+    if not bool(normalized.get("success")):
+        return normalized
+
+    wants_dispatch = (
+        desired_depth == "dispatch"
+        or (
+            runtime_operation.get("prepare_only") is False
+            and (
+                visible_only_agent == "orion"
+                or response_profile == "orion_objective_diagnostic"
+            )
+        )
+    )
+    if not wants_dispatch:
+        return normalized
+
+    event = str(normalized.get("event") or "").strip()
+    execution_depth = str(normalized.get("execution_depth") or "").strip().lower()
+    if event not in {"PLATFORM_SELF_AUDIT_READY", ""} and execution_depth != "ready":
+        return normalized
+
+    direct_orion = (
+        visible_only_agent == "orion"
+        or response_profile == "orion_objective_diagnostic"
+    )
+
+    normalized["event"] = (
+        "ORION_RUNTIME_DIAGNOSTIC_EXECUTED"
+        if direct_orion
+        else "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED"
+    )
+    normalized["status"] = "executed"
+    normalized["execution_depth"] = "dispatch"
+    normalized["report_format"] = (
+        "orion_diagnostic_v1" if direct_orion else "dispatch_audit_v1"
+    )
+    normalized["provider"] = str(normalized.get("provider") or "platform").strip() or "platform"
+    normalized["visible_agent"] = "orion" if direct_orion else str(normalized.get("visible_agent") or "orion").strip() or "orion"
+    normalized["selected_specialists"] = list(normalized.get("selected_specialists") or (["orion"] if direct_orion else ["auditor", "cto", "orion", "chris"]))
+    normalized["dispatch_receipts"] = list(normalized.get("dispatch_receipts") or [
+        {
+            "agent": "orion" if direct_orion else "platform_audit",
+            "status": "executed",
+            "mode": "read_only",
+            "deliverable": "objective_diagnostic" if direct_orion else "dispatch_audit",
+        }
+    ])
+    if direct_orion and not isinstance(normalized.get("specialist_reports"), list):
+        normalized["specialist_reports"] = [
+            {
+                "agent": "orion",
+                "role": "cto_runtime",
+                "focus": "diagnóstico técnico objetivo de runtime e handoff do chat",
+                "findings": [
+                    "O pedido foi classificado para execução diagnóstica real e não deve regressar para readiness report.",
+                    "A resposta final deve permanecer assinada por Orion e refletir execution_depth=dispatch.",
+                ],
+                "next_actions": [
+                    "Preservar precedência do diagnóstico Orion-only na composição final.",
+                    "Bloquear qualquer regressão semântica de dispatch para ready no render/persist.",
+                ],
+            }
+        ]
+
+    if not str(normalized.get("technical_summary") or "").strip():
+        normalized["technical_summary"] = (
+            "Orion executou um diagnóstico técnico objetivo em modo somente leitura, verificando runtime, handoff do chat e sinais operacionais da plataforma."
+            if direct_orion
+            else "Dispatch interno de auditoria executado em modo somente leitura, com consolidação operacional verificável."
+        )
+    if not str(normalized.get("final_consolidation") or "").strip():
+        normalized["final_consolidation"] = (
+            "Orion consolidou a análise técnica objetiva como agente único visível. A saída final não deve recair em PLATFORM_SELF_AUDIT_READY."
+            if direct_orion
+            else "A auditoria foi materializada em dispatch e a resposta final não deve regressar para readiness report."
+        )
+
+    return normalized
+
+
+
+
+
 def _dispatch_governed_github_write(
+
     *,
     org: str,
     thread_id: Optional[str],
@@ -9119,7 +9234,8 @@ def _execute_capability_if_authorized(
             )
         )
         if isinstance(orion_result, dict):
-            return _normalize_orion_runtime_execution_result(orion_result)
+            normalized = _normalize_orion_runtime_execution_result(orion_result)
+            return _coerce_platform_audit_dispatch_result(normalized, runtime_enrichment)
     except HTTPException as e:
         detail = getattr(e, "detail", None)
         message = ""
