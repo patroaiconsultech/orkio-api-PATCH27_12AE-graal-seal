@@ -176,6 +176,43 @@ _AUDIT_EXECUTION_TERMS = [
     "execute as acoes necessarias",
     "execute as últimas orientações",
     "execute as ultimas orientacoes",
+    "verifique o github runtime",
+    "verifique github runtime",
+    "verifique o runtime",
+    "verifique runtime",
+    "diagnóstico técnico objetivo",
+    "diagnostico tecnico objetivo",
+    "análise técnica objetiva",
+    "analise tecnica objetiva",
+    "diagnóstico técnico da plataforma",
+    "diagnostico tecnico da plataforma",
+    "diagnóstico do backend",
+    "diagnostico do backend",
+    "diagnóstico do frontend",
+    "diagnostico do frontend",
+    "responda exclusivamente como orion",
+    "respondendo exclusivamente como orion",
+]
+
+_ORION_DIRECT_DIAGNOSTIC_TERMS = [
+    "verifique o github runtime",
+    "verifique github runtime",
+    "verifique o runtime",
+    "verifique runtime",
+    "diagnóstico técnico objetivo",
+    "diagnostico tecnico objetivo",
+    "análise técnica objetiva",
+    "analise tecnica objetiva",
+    "diagnóstico técnico da plataforma",
+    "diagnostico tecnico da plataforma",
+    "diagnóstico do backend",
+    "diagnostico do backend",
+    "diagnóstico do frontend",
+    "diagnostico do frontend",
+    "me devolva um diagnóstico técnico objetivo",
+    "me devolva um diagnostico tecnico objetivo",
+    "responda exclusivamente como orion",
+    "respondendo exclusivamente como orion",
 ]
 
 # =========================
@@ -216,6 +253,7 @@ _PATCH_PLAN_TERMS = [
 
 def _detect_runtime_operation(text: str) -> Dict[str, Any]:
     txt = _normalize(text)
+    direct_orion_diagnostic = _contains_any(txt, _ORION_DIRECT_DIAGNOSTIC_TERMS)
 
     if _contains_any(txt, _SQUAD_TERMS):
         return {
@@ -226,9 +264,14 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "data_source": "agents_api",
         }
 
-    if _contains_any(txt, _AUDIT_TERMS):
+    if direct_orion_diagnostic or _contains_any(txt, _AUDIT_TERMS):
         specialist_mode = _contains_any(txt, _SPECIALIST_AUDIT_TERMS)
-        wants_execution = _contains_any(txt, _AUDIT_EXECUTION_TERMS)
+        wants_execution = _contains_any(txt, _AUDIT_EXECUTION_TERMS) or direct_orion_diagnostic
+        visible_only_agent = "orion" if (
+            direct_orion_diagnostic
+            or "@orion" in txt
+            or "como orion" in txt
+        ) else ""
         return {
             "kind": "platform_audit",
             "target_agent": "orion",
@@ -236,6 +279,8 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "audit_mode": "specialist" if specialist_mode else "standard",
             "prepare_only": not wants_execution,
             "execution_depth": "dispatch" if wants_execution else "ready",
+            "visible_only_agent": visible_only_agent,
+            "response_profile": "orion_objective_diagnostic" if direct_orion_diagnostic else "platform_audit",
         }
 
     if _contains_any(txt, _RUNTIME_SCAN_TERMS):
@@ -316,14 +361,17 @@ def build_intent_package(
         recommended_agents = [runtime_op["target_agent"]]
 
     if intent == "platform_audit":
-        advisor_agents = [
-            "auditor",
-            "cto",
-            "orion",
-            "chris",
-            "saint_germain",
-            "metatron",
-        ]
+        if runtime_op.get("visible_only_agent") == "orion":
+            advisor_agents = ["orion", "metatron"]
+        else:
+            advisor_agents = [
+                "auditor",
+                "cto",
+                "orion",
+                "chris",
+                "saint_germain",
+                "metatron",
+            ]
     elif intent == "patch_plan":
         advisor_agents = ["cto", "orion", "auditor", "metatron"]
     elif intent == "runtime_scan":
@@ -344,7 +392,11 @@ def build_intent_package(
     first_win_goal = "deliver_clear_next_step"
 
     if intent == "platform_audit":
-        first_win_goal = "produce_specialist_audit_plan"
+        first_win_goal = (
+            "execute_orion_objective_diagnostic"
+            if runtime_op.get("visible_only_agent") == "orion"
+            else "produce_specialist_audit_plan"
+        )
     elif intent == "patch_plan":
         first_win_goal = "prepare_safe_patch_plan"
     elif intent == "runtime_scan":
