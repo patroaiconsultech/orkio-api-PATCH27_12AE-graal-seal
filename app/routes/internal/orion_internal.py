@@ -304,8 +304,63 @@ def _audit_wants_full_execution(message: str, prepare_only: bool = False) -> boo
         "execute as acoes necessarias",
         "execute as últimas orientações",
         "execute as ultimas orientacoes",
+        "verifique o github runtime",
+        "verifique github runtime",
+        "verifique o runtime",
+        "verifique runtime",
+        "diagnóstico técnico objetivo",
+        "diagnostico tecnico objetivo",
+        "análise técnica objetiva",
+        "analise tecnica objetiva",
+        "diagnóstico técnico da plataforma",
+        "diagnostico tecnico da plataforma",
+        "diagnóstico do backend",
+        "diagnostico do backend",
+        "diagnóstico do frontend",
+        "diagnostico do frontend",
+        "responda exclusivamente como orion",
+        "respondendo exclusivamente como orion",
     )
     return any(marker in txt for marker in execution_markers)
+
+
+def _is_orion_direct_diagnostic_request(message: str, visible_agent: str = "orion") -> bool:
+    txt = (message or "").strip().lower()
+    if not txt:
+        return False
+    if str(visible_agent or "").strip().lower() != "orion":
+        return False
+
+    direct_markers = (
+        "verifique o github runtime",
+        "verifique github runtime",
+        "verifique o runtime",
+        "verifique runtime",
+        "diagnóstico técnico objetivo",
+        "diagnostico tecnico objetivo",
+        "análise técnica objetiva",
+        "analise tecnica objetiva",
+        "diagnóstico técnico da plataforma",
+        "diagnostico tecnico da plataforma",
+        "diagnóstico do backend",
+        "diagnostico do backend",
+        "diagnóstico do frontend",
+        "diagnostico do frontend",
+        "me devolva um diagnóstico técnico objetivo",
+        "me devolva um diagnostico tecnico objetivo",
+        "responda exclusivamente como orion",
+        "respondendo exclusivamente como orion",
+        "sem delegar a outro agente",
+    )
+
+    if any(marker in txt for marker in direct_markers):
+        return True
+
+    return (
+        ("github" in txt or "runtime" in txt)
+        and ("diagnóstico" in txt or "diagnostico" in txt or "objetivo" in txt or "verifique" in txt)
+        and ("orion" in txt or "@orion" in txt)
+    )
 
 
 def _audit_facts_observed(scope: str) -> List[str]:
@@ -622,7 +677,8 @@ def _audit_final_consolidation(selected_specialists: List[str], scope: str) -> s
 
 def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str) -> Dict[str, Any]:
     scope = _audit_scope(inp.message)
-    execute_full = _audit_wants_full_execution(inp.message, bool(inp.prepare_only))
+    direct_orion_diagnostic = _is_orion_direct_diagnostic_request(inp.message, visible_agent)
+    execute_full = _audit_wants_full_execution(inp.message, bool(inp.prepare_only)) or direct_orion_diagnostic
     repo_targets = _build_repo_targets()
     audit_plan = {
         "requested_by": visible_agent,
@@ -683,7 +739,7 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
             "generated_at": _now_ts(),
         }
 
-    selected_specialists = _audit_selected_specialists(scope, bool(inp.include_frontend))
+    selected_specialists = ["orion"] if direct_orion_diagnostic else _audit_selected_specialists(scope, bool(inp.include_frontend))
     dispatch_receipts = _audit_dispatch_receipts(selected_specialists, scope)
     specialist_reports = _audit_specialist_reports(selected_specialists, scope)
 
@@ -692,18 +748,26 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         "service": "orion_internal",
         "mode": "platform_self_audit",
         "provider": "platform",
-        "event": "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED",
+        "event": "ORION_RUNTIME_DIAGNOSTIC_EXECUTED" if direct_orion_diagnostic else "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED",
         "status": "executed",
         "scope": scope,
-        "report_format": "dispatch_audit_v1",
+        "report_format": "orion_diagnostic_v1" if direct_orion_diagnostic else "dispatch_audit_v1",
         "execution_depth": "dispatch",
         "visible_agent": visible_agent,
         "repo": _github_repo(),
-        "technical_summary": "Dispatch interno de especialistas executado em modo somente leitura. O backend acionou o squad solicitado e consolidou a entrega sem depender do loop automático nem de escrita governada.",
+        "technical_summary": (
+            "Orion executou um diagnóstico técnico objetivo em modo somente leitura, verificando runtime, handoff do chat e sinais de plataforma sem depender de escrita governada."
+            if direct_orion_diagnostic
+            else "Dispatch interno de especialistas executado em modo somente leitura. O backend acionou o squad solicitado e consolidou a entrega sem depender do loop automático nem de escrita governada."
+        ),
         "selected_specialists": selected_specialists,
         "dispatch_receipts": dispatch_receipts,
         "specialist_reports": specialist_reports,
-        "final_consolidation": _audit_final_consolidation(selected_specialists, scope),
+        "final_consolidation": (
+            "Orion consolidou a análise técnica objetiva como agente único visível. A resposta final deve sair assinada como Orion e não deve recair em PLATFORM_SELF_AUDIT_READY."
+            if direct_orion_diagnostic
+            else _audit_final_consolidation(selected_specialists, scope)
+        ),
         "key_files": [
             "app/runtime/intent_engine.py",
             "app/routes/internal/orion_internal.py",
@@ -720,13 +784,25 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
             "Dispatch executado precisa ser refletido pela camada de renderização final.",
             "A auditoria read-only continua isolada de escrita governada, deploy e operações destrutivas.",
             "Handlers de inventário/config e dispatch multiagente não devem compartilhar o mesmo template textual.",
-        ],
-        "remediation_plan": [
-            "1. Preservar precedência de platform_self_audit sobre github_runtime_general.",
-            "2. Renderizar execution_depth=dispatch como resposta principal.",
-            "3. Exibir receipts e relatórios por especialista sem recair em full_audit_v1.",
-            "4. Consolidar a síntese final em um único bloco operacional verificável.",
-        ],
+        ] + (
+            [
+                "Pedidos Orion-only de diagnóstico técnico objetivo devem produzir execução diagnóstica real, não PLATFORM_SELF_AUDIT_READY.",
+                "A síntese final do diagnóstico direto deve permanecer assinada por Orion, sem delegação visual para outro agente.",
+            ] if direct_orion_diagnostic else []
+        ),
+        "remediation_plan": (
+            [
+                "1. Preservar precedência do diagnóstico Orion-only sobre github_runtime_general.",
+                "2. Emitir ORION_RUNTIME_DIAGNOSTIC_EXECUTED como resposta principal.",
+                "3. Manter receipts e síntese final alinhados a Orion.",
+                "4. Evitar regressão para template consultivo READY.",
+            ] if direct_orion_diagnostic else [
+                "1. Preservar precedência de platform_self_audit sobre github_runtime_general.",
+                "2. Renderizar execution_depth=dispatch como resposta principal.",
+                "3. Exibir receipts e relatórios por especialista sem recair em full_audit_v1.",
+                "4. Consolidar a síntese final em um único bloco operacional verificável.",
+            ]
+        ),
         "audit_plan": audit_plan,
         "generated_at": _now_ts(),
     }
@@ -735,6 +811,9 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
 def orion_runtime_execute(inp: "OrionRuntimeIn") -> Dict[str, Any]:
     message = inp.message or ""
     lowered = message.lower()
+    visible_agent = _resolve_visible_agent(message, default="orion")
+    if _is_orion_direct_diagnostic_request(message, visible_agent):
+        return platform_self_audit(inp)
     if any(term in lowered for term in (
         "auditoria", "audit", "autoconhecimento", "consultivo", "somente leitura",
         "read only", "diagnóstico", "diagnostico"
