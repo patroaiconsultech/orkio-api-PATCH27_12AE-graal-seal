@@ -9615,6 +9615,9 @@ def chat(
             _require_thread_member(db, org, tid, uid)
 
     blocked_reply = _block_if_sensitive(inp.message)
+    orion_self_knowledge_flags = _orion_self_knowledge_request_flags(inp.message)
+    if orion_self_knowledge_flags.get("requested"):
+        blocked_reply = None
     active_founder_guidance = _get_founder_guidance(org, tid, inp.message)
 
     # Parse @mentions
@@ -9644,9 +9647,24 @@ def chat(
         if first:
             alias_to_agent.setdefault(first, a)
 
+    # PATCH27_12AY — Orion self-knowledge hard gate BEFORE any fan-out
+    forced_orion_agent = None
+    if orion_self_knowledge_flags.get("requested"):
+        forced_orion_agent = (
+            alias_to_agent.get("orion")
+            or alias_to_agent.get("orion cto")
+        )
+        if forced_orion_agent is not None:
+            requested_names = ["orion"]
+            mention_tokens = ["orion"]
+            has_team = False
+
     # STAB: select_target_agents — determinístico, nunca sobrescrito
-    target_agents = _select_target_agents(db, org, inp, alias_to_agent, mention_tokens, has_team)
-    target_agents = _apply_explicit_agent_request(db, org, target_agents, requested_names)
+    if forced_orion_agent is not None:
+        target_agents = [forced_orion_agent]
+    else:
+        target_agents = _select_target_agents(db, org, inp, alias_to_agent, mention_tokens, has_team)
+        target_agents = _apply_explicit_agent_request(db, org, target_agents, requested_names)
 
 
     wallet_action_prefix = f"chat:{tid}:"
@@ -13085,6 +13103,9 @@ async def chat_stream(
         raise
 
     blocked_reply = _block_if_sensitive(message)
+    orion_self_knowledge_flags = _orion_self_knowledge_request_flags(message)
+    if orion_self_knowledge_flags.get("requested"):
+        blocked_reply = None
     active_founder_guidance = _get_founder_guidance(org, tid, message)
 
     # Resolve target agents (align /api/chat/stream with /api/chat)
@@ -13113,8 +13134,23 @@ async def chat_stream(
         if first:
             alias_to_agent.setdefault(first, a)
 
-    target_agents_rows = _select_target_agents(db, org, inp, alias_to_agent, mention_tokens, has_team)
-    target_agents_rows = _apply_explicit_agent_request(db, org, target_agents_rows, requested_names)
+    # PATCH27_12AY — Orion self-knowledge hard gate BEFORE any fan-out
+    forced_orion_row = None
+    if orion_self_knowledge_flags.get("requested"):
+        forced_orion_row = (
+            alias_to_agent.get("orion")
+            or alias_to_agent.get("orion cto")
+        )
+        if forced_orion_row is not None:
+            requested_names = ["orion"]
+            mention_tokens = ["orion"]
+            has_team = False
+
+    if forced_orion_row is not None:
+        target_agents_rows = [forced_orion_row]
+    else:
+        target_agents_rows = _select_target_agents(db, org, inp, alias_to_agent, mention_tokens, has_team)
+        target_agents_rows = _apply_explicit_agent_request(db, org, target_agents_rows, requested_names)
 
     if not target_agents_rows:
         raise HTTPException(400, "no agents configured")
