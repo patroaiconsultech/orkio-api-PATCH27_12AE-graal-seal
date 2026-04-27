@@ -6275,6 +6275,28 @@ def _orion_self_knowledge_request_flags(user_text: str) -> Dict[str, Any]:
     }
 
 
+def _orion_catalog_appendix_request_flags(user_text: str) -> Dict[str, Any]:
+    txt = (user_text or "").strip().lower()
+    if not txt:
+        return {"requested": False}
+
+    appendix_patterns = [
+        r"ap[êe]ndice\s+t[eé]cnico",
+        r"invent[aá]rio\s+bruto",
+        r"cat[aá]logo\s+completo",
+        r"invent[aá]rio\s+completo",
+        r"raw\s+inventory",
+        r"full\s+inventory",
+        r"full\s+catalog",
+        r"modo\s+detalhado",
+        r"detalhamento\s+completo",
+        r"anex[ea]r?\s+o\s+invent[aá]rio",
+    ]
+    return {
+        "requested": any(re.search(p, txt, flags=re.IGNORECASE) for p in appendix_patterns),
+    }
+
+
 def _pick_target_agent_by_slug(target_agents: Optional[List[Dict[str, Any]]], slug: str) -> Optional[Dict[str, Any]]:
     wanted = _canonical_runtime_agent_slug(slug)
     if not wanted:
@@ -6488,6 +6510,7 @@ def _build_capability_inventory_text(
     privileged: bool = False,
     only_hidden: bool = False,
     only_technical: bool = False,
+    user_text: Optional[str] = None,
 ) -> str:
     if include_hidden and not privileged:
         return "NÃO TENHO ACESSO AO CATÁLOGO PRIVILEGIADO."
@@ -6516,6 +6539,7 @@ def _build_capability_inventory_text(
 
     if include_hidden:
         if only_technical:
+            appendix_flags = _orion_catalog_appendix_request_flags(user_text or "")
             visible_technical = []
             excluded = []
             for item in catalog:
@@ -6633,6 +6657,20 @@ def _build_capability_inventory_text(
             lines.append("- Orion conseguiu responder a partir do catálogo técnico privilegiado real.")
             lines.append("- A equipe técnica interna foi detectada de forma consistente.")
             lines.append("- O próximo refinamento ideal é manter este conteúdo executivo e, quando necessário, anexar o inventário bruto apenas como apêndice.")
+
+            if appendix_flags.get("requested"):
+                lines.append("")
+                lines.append("H. APÊNDICE TÉCNICO BRUTO")
+                for idx, item in enumerate(visible_technical, start=1):
+                    lines.append(f"{idx}. {_safe_str(item.get('name') or item.get('slug'))}")
+                    lines.append(f"   - id: {_safe_str(item.get('id'))}")
+                    lines.append(f"   - slug: {_safe_str(item.get('slug'))}")
+                    lines.append(f"   - role: {_safe_str(item.get('role'))}")
+                    lines.append(f"   - hidden: {_bool_label(item.get('hidden'))}")
+                    lines.append(f"   - internal: {_bool_label(item.get('internal'))}")
+                    lines.append(f"   - system: {_bool_label(item.get('system'))}")
+                    lines.append(f"   - available_to_runtime: {_bool_label(item.get('available_to_runtime', True))}")
+
             return "\n".join(lines)
 
         if only_hidden:
@@ -9978,6 +10016,7 @@ def chat(
                             privileged=_payload_has_catalog_privileged_access(user),
                             only_hidden=False,
                             only_technical=True,
+                            user_text=inp.message,
                         )
                     elif hidden_catalog_flags.get("requested"):
                         capability_inventory_answer = _build_capability_inventory_text(
@@ -9987,6 +10026,7 @@ def chat(
                             privileged=_payload_has_catalog_privileged_access(user),
                             only_hidden=bool(hidden_catalog_flags.get("only_hidden")),
                             only_technical=bool(hidden_catalog_flags.get("only_technical")),
+                            user_text=inp.message,
                         )
                     elif _is_github_access_request(inp.message):
                         capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
@@ -13653,6 +13693,7 @@ async def chat_stream(
                                     privileged=_payload_has_catalog_privileged_access(user),
                                     only_hidden=False,
                                     only_technical=True,
+                                    user_text=message,
                                 )
                             elif hidden_catalog_flags.get("requested"):
                                 capability_inventory_answer = _build_capability_inventory_text(
@@ -13662,6 +13703,7 @@ async def chat_stream(
                                     privileged=_payload_has_catalog_privileged_access(user),
                                     only_hidden=bool(hidden_catalog_flags.get("only_hidden")),
                                     only_technical=bool(hidden_catalog_flags.get("only_technical")),
+                                    user_text=message,
                                 )
                             elif _is_github_access_request(message):
                                 capability_inventory_answer = _build_github_runtime_status_text(db=db, org=org)
