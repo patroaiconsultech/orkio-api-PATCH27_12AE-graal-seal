@@ -6528,28 +6528,111 @@ def _build_capability_inventory_text(
                 else:
                     excluded.append({"name": name, "role": role or "n/d"})
 
-            lines = ["EQUIPE TÉCNICA REAL:"]
-            for idx, item in enumerate(visible_technical, start=1):
-                lines.append(f"{idx}. {item.get('name') or item.get('slug') or 'n/d'}")
-                lines.append(f"   - id: {item.get('id') or 'n/d'}")
-                lines.append(f"   - slug: {item.get('slug') or 'n/d'}")
-                lines.append(f"   - role: {item.get('role') or 'n/d'}")
-                lines.append(f"   - hidden: {bool(item.get('hidden'))}")
-                lines.append(f"   - internal: {bool(item.get('internal'))}")
-                lines.append(f"   - system: {bool(item.get('system'))}")
-                lines.append(f"   - available_to_runtime: {bool(item.get('available_to_runtime', True))}")
+            def _safe_str(v: Any, default: str = "n/d") -> str:
+                s = str(v or "").strip()
+                return s or default
+
+            def _bool_label(v: Any) -> str:
+                return "True" if bool(v) else "False"
+
+            def _is_slug(item: Dict[str, Any], slug: str) -> bool:
+                return _safe_str(item.get("slug"), "").lower() == slug
+
+            def _find_slug(slug: str) -> Optional[Dict[str, Any]]:
+                for _item in visible_technical:
+                    if _is_slug(_item, slug):
+                        return _item
+                return None
+
+            def _fmt_catalog_item(item: Optional[Dict[str, Any]]) -> List[str]:
+                if not isinstance(item, dict):
+                    return [f"- {slug if (slug := 'n/d') else 'n/d'}: não detectado no catálogo atual"]
+                return [
+                    f"- {_safe_str(item.get('name') or item.get('slug'))}",
+                    f"  slug: {_safe_str(item.get('slug'))}",
+                    f"  role: {_safe_str(item.get('role'))}",
+                    f"  id: {_safe_str(item.get('id'))}",
+                    f"  hidden/internal/system: {_bool_label(item.get('hidden'))}/{_bool_label(item.get('internal'))}/{_bool_label(item.get('system'))}",
+                    f"  available_to_runtime: {_bool_label(item.get('available_to_runtime', True))}",
+                ]
+
+            orchestrator = _find_slug("orkio")
+            orion = _find_slug("orion")
+            auditor = _find_slug("auditor")
+            architect = _find_slug("architect")
+            devops = _find_slug("devops")
+            sre = _find_slug("sre")
+            security = _find_slug("security")
+            stage_manager = _find_slug("stage_manager")
+            memory_ops = _find_slug("memory_ops")
+            gitops = _find_slug("gitops")
+
+            lines = []
+            lines.append("A. IDENTIDADE OPERACIONAL ATUAL")
+            if orion:
+                lines.append(f"- Orion foi detectado no runtime como agente real visível, slug={_safe_str(orion.get('slug'))}, role={_safe_str(orion.get('role'))}, available_to_runtime={_bool_label(orion.get('available_to_runtime', True))}.")
+                lines.append("- Neste contexto, Orion atua como interface técnica visível para leitura e consolidação do catálogo operacional.")
+            else:
+                lines.append("- Orion não foi detectado explicitamente no catálogo técnico retornado nesta execução.")
+
             lines.append("")
-            lines.append("AGENTES EXCLUÍDOS:")
+            lines.append("B. CADEIA OPERACIONAL REAL")
+            lines.append("- Orkio: orquestrador visível do sistema.")
+            lines.append("- Orion: persona técnica visível especializada em diagnóstico e consolidação.")
+            lines.append("- Auditor: auditor interno do runtime.")
+            lines.append("- Architect: arquitetura e desenho estrutural.")
+            lines.append("- DevOps + SRE + GitOps: execução técnica, entrega, operação e estabilidade.")
+            lines.append("- Security: segurança e risco técnico.")
+            lines.append("- Stage Manager + Memory Ops: coordenação operacional e memória/runtime.")
+            lines.append("- Chris foi excluído da equipe técnica por estar classificado como cfo.")
+
+            lines.append("")
+            lines.append("C. PAPÉIS TÉCNICOS DETECTADOS")
+            lines.append("1. Orquestrador")
+            lines.extend(_fmt_catalog_item(orchestrator))
+            lines.append("2. Persona técnica visível")
+            lines.extend(_fmt_catalog_item(orion))
+            lines.append("3. Auditor")
+            lines.extend(_fmt_catalog_item(auditor))
+            lines.append("4. Arquitetura")
+            lines.extend(_fmt_catalog_item(architect))
+            lines.append("5. Execução e operação")
+            for item in [devops, sre, gitops]:
+                lines.extend(_fmt_catalog_item(item))
+            lines.append("6. Segurança")
+            lines.extend(_fmt_catalog_item(security))
+            lines.append("7. Coordenação e memória operacional")
+            for item in [stage_manager, memory_ops]:
+                lines.extend(_fmt_catalog_item(item))
+
+            lines.append("")
+            lines.append("D. LEITURA EXECUTIVA")
+            lines.append(f"- total técnico detectado: {len(visible_technical)}")
+            lines.append(f"- auditor presente: {'sim' if auditor is not None else 'não'}")
+            lines.append(f"- executor real principal: {'DevOps/SRE/GitOps' if any(x is not None for x in [devops, sre, gitops]) else 'não confirmado'}")
+            lines.append(f"- orquestrador principal: {'Orkio' if orchestrator is not None else 'não confirmado'}")
+            lines.append(f"- persona técnica visível: {'Orion' if orion is not None else 'não confirmado'}")
+            lines.append("- catálogo usado: privilegiado")
+
+            lines.append("")
+            lines.append("E. RISCOS E LACUNAS")
+            lines.append("- Há risco estrutural de confusão entre orquestrador visível, executor real e persona final assinante.")
+            lines.append("- O catálogo confirma presença e papéis, mas não prova sozinho qual agente executou cada passo interno desta resposta.")
+            lines.append("- Para rastreabilidade perfeita, ainda é desejável expor receipts por função operacional sem reabrir fan-out no chat.")
+
+            lines.append("")
+            lines.append("F. AGENTES EXCLUÍDOS")
             if excluded:
                 for item in excluded:
                     lines.append(f"- {item['name']} - {item['role']}")
             else:
                 lines.append("- nenhum")
+
             lines.append("")
-            lines.append("VEREDITO:")
-            lines.append(f"- total técnico: {len(visible_technical)}")
-            lines.append(f"- auditor presente: {'sim' if any(str(item.get('slug') or '') == 'auditor' for item in visible_technical) else 'não'}")
-            lines.append("- catálogo usado: privilegiado")
+            lines.append("G. VEREDITO")
+            lines.append("- Orion conseguiu responder a partir do catálogo técnico privilegiado real.")
+            lines.append("- A equipe técnica interna foi detectada de forma consistente.")
+            lines.append("- O próximo refinamento ideal é manter este conteúdo executivo e, quando necessário, anexar o inventário bruto apenas como apêndice.")
             return "\n".join(lines)
 
         if only_hidden:
