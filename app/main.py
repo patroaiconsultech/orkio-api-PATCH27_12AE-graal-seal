@@ -6245,6 +6245,47 @@ def _hidden_catalog_request_flags(user_text: str) -> Dict[str, Any]:
         "only_technical": any(re.search(p, txt, flags=re.IGNORECASE) for p in only_technical_patterns),
     }
 
+
+def _orion_self_knowledge_request_flags(user_text: str) -> Dict[str, Any]:
+    txt = (user_text or "").strip().lower()
+    if not txt:
+        return {"requested": False, "force_orion_only": False, "only_technical": False}
+
+    patterns = [
+        r"autoconhec",
+        r"auto\s*conhec",
+        r"estrutura\s+interna\s+de\s+agentes",
+        r"cat[aá]logo\s+t[eé]cnico\s+real",
+        r"agentes\s+reais\s+detectados\s+no\s+runtime",
+        r"equipe\s+t[eé]cnica\s+interna",
+        r"executor\s+real",
+        r"persona\s+vis[ií]vel",
+        r"cadeia\s+de\s+execu",
+        r"cadeia\s+de\s+assinatura",
+        r"responder\s+exclusivamente\s+como\s+orion",
+        r"quem\s+executa",
+        r"quem\s+audita",
+        r"quem\s+consolida",
+    ]
+    requested = any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
+    return {
+        "requested": requested,
+        "force_orion_only": requested,
+        "only_technical": requested,
+    }
+
+
+def _pick_target_agent_by_slug(target_agents: Optional[List[Dict[str, Any]]], slug: str) -> Optional[Dict[str, Any]]:
+    wanted = _canonical_runtime_agent_slug(slug)
+    if not wanted:
+        return None
+    for ag in list(target_agents or []):
+        current = _canonical_runtime_agent_slug((ag or {}).get("slug") or (ag or {}).get("name"))
+        if current == wanted:
+            return ag
+    return None
+
+
 def _is_hidden_catalog_request(user_text: str) -> bool:
     return bool(_hidden_catalog_request_flags(user_text).get("requested"))
 
@@ -9674,6 +9715,24 @@ def chat(
     except Exception:
         pass
     try:
+        orion_self_knowledge_flags = _orion_self_knowledge_request_flags(inp.message)
+        if orion_self_knowledge_flags.get("requested"):
+            forced_orion = _pick_target_agent_by_slug(target_agents, "orion")
+            if forced_orion is not None:
+                target_agents = [forced_orion]
+                planner_snapshot_live = runtime_enrichment.get("planner_snapshot") if isinstance(runtime_enrichment.get("planner_snapshot"), dict) else {}
+                if isinstance(planner_snapshot_live, dict):
+                    planner_snapshot_live["visible_only_agent"] = "orion"
+                    planner_snapshot_live["response_profile"] = "orion_catalog_self_knowledge"
+                    runtime_enrichment["planner_snapshot"] = planner_snapshot_live
+                runtime_hints_live = runtime_enrichment.get("runtime_hints") if isinstance(runtime_enrichment.get("runtime_hints"), dict) else {}
+                if isinstance(runtime_hints_live, dict):
+                    runtime_hints_live["force_single_visible_agent"] = "orion"
+                    runtime_hints_live["force_catalog_self_knowledge"] = True
+                    runtime_enrichment["runtime_hints"] = runtime_hints_live
+    except Exception:
+        pass
+    try:
         dag_snapshot = runtime_enrichment.get("dag_snapshot") or {}
         if dag_snapshot.get("route_applied"):
             _persist_trial_event(
@@ -9808,8 +9867,18 @@ def chat(
                         privileged=_payload_has_catalog_privileged_access(user),
                     )
                 else:
+                    orion_self_knowledge_flags = _orion_self_knowledge_request_flags(inp.message)
                     hidden_catalog_flags = _hidden_catalog_request_flags(inp.message)
-                    if hidden_catalog_flags.get("requested"):
+                    if orion_self_knowledge_flags.get("requested") and _canonical_runtime_agent_slug(final_signer_agent_name) == "orion":
+                        capability_inventory_answer = _build_capability_inventory_text(
+                            db=db,
+                            org=org,
+                            include_hidden=True,
+                            privileged=_payload_has_catalog_privileged_access(user),
+                            only_hidden=False,
+                            only_technical=True,
+                        )
+                    elif hidden_catalog_flags.get("requested"):
                         capability_inventory_answer = _build_capability_inventory_text(
                             db=db,
                             org=org,
@@ -13155,6 +13224,24 @@ async def chat_stream(
     except Exception:
         pass
     try:
+        orion_self_knowledge_flags = _orion_self_knowledge_request_flags(message)
+        if orion_self_knowledge_flags.get("requested"):
+            forced_orion = _pick_target_agent_by_slug(target_agents, "orion")
+            if forced_orion is not None:
+                target_agents = [forced_orion]
+                planner_snapshot_live = runtime_enrichment.get("planner_snapshot") if isinstance(runtime_enrichment.get("planner_snapshot"), dict) else {}
+                if isinstance(planner_snapshot_live, dict):
+                    planner_snapshot_live["visible_only_agent"] = "orion"
+                    planner_snapshot_live["response_profile"] = "orion_catalog_self_knowledge"
+                    runtime_enrichment["planner_snapshot"] = planner_snapshot_live
+                runtime_hints_live = runtime_enrichment.get("runtime_hints") if isinstance(runtime_enrichment.get("runtime_hints"), dict) else {}
+                if isinstance(runtime_hints_live, dict):
+                    runtime_hints_live["force_single_visible_agent"] = "orion"
+                    runtime_hints_live["force_catalog_self_knowledge"] = True
+                    runtime_enrichment["runtime_hints"] = runtime_hints_live
+    except Exception:
+        pass
+    try:
         dag_snapshot = runtime_enrichment.get("dag_snapshot") or {}
         if dag_snapshot.get("route_applied"):
             _persist_trial_event(
@@ -13437,8 +13524,18 @@ async def chat_stream(
                                 privileged=_payload_has_catalog_privileged_access(user),
                             )
                         else:
+                            orion_self_knowledge_flags = _orion_self_knowledge_request_flags(message)
                             hidden_catalog_flags = _hidden_catalog_request_flags(message)
-                            if hidden_catalog_flags.get("requested"):
+                            if orion_self_knowledge_flags.get("requested") and _canonical_runtime_agent_slug(ag_name) == "orion":
+                                capability_inventory_answer = _build_capability_inventory_text(
+                                    db=db,
+                                    org=org,
+                                    include_hidden=True,
+                                    privileged=_payload_has_catalog_privileged_access(user),
+                                    only_hidden=False,
+                                    only_technical=True,
+                                )
+                            elif hidden_catalog_flags.get("requested"):
                                 capability_inventory_answer = _build_capability_inventory_text(
                                     db=db,
                                     org=org,
