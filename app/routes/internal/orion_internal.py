@@ -233,12 +233,70 @@ def _looks_like_compare_status_request(message: str) -> bool:
     return bool(has_compare or has_pr_ref or has_branch_compare or structured_fields)
 
 
+_COMMON_BRANCH_PREFIXES = {
+    "feat",
+    "feature",
+    "fix",
+    "hotfix",
+    "chore",
+    "docs",
+    "doc",
+    "refactor",
+    "test",
+    "tests",
+    "ci",
+    "build",
+    "release",
+    "bugfix",
+    "perf",
+    "style",
+    "spike",
+}
+
+
+def _looks_like_repo_slug(candidate: str) -> bool:
+    value = str(candidate or "").strip().strip("/")
+    return bool(value) and value.count("/") == 1 and all(part.strip() for part in value.split("/", 1))
+
+
+def _looks_like_branch_ref(candidate: str) -> bool:
+    value = str(candidate or "").strip().strip("/")
+    if not value or "/" not in value:
+        return False
+    if value.startswith("refs/heads/"):
+        return True
+    first = value.split("/", 1)[0].strip().lower()
+    return first in _COMMON_BRANCH_PREFIXES
+
+
 def _extract_explicit_repo_from_message(message: str) -> str:
     txt = (message or "").strip()
     if not txt:
         return ""
-    m = re.search(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", txt)
-    return str(m.group(1) if m else "").strip()
+
+    url_match = re.search(
+        r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        txt,
+        flags=re.IGNORECASE,
+    )
+    if url_match:
+        candidate = str(url_match.group(1) or "").strip()
+        if _looks_like_repo_slug(candidate) and not _looks_like_branch_ref(candidate):
+            return candidate
+
+    explicit_patterns = [
+        r"(?:reposit[oó]rio|repositorio|repo|repository)\s+(?:frontend\s+|backend\s+|web\s+|api\s+)?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        r"(?:no|na|do|da)\s+(?:reposit[oó]rio|repositorio|repo|repository)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+    ]
+    for pattern in explicit_patterns:
+        match = re.search(pattern, txt, flags=re.IGNORECASE)
+        if not match:
+            continue
+        candidate = str(match.group(1) or "").strip()
+        if _looks_like_repo_slug(candidate) and not _looks_like_branch_ref(candidate):
+            return candidate
+
+    return ""
 
 
 def _resolve_repo_target_from_message(message: str) -> str:
@@ -389,6 +447,7 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
     pr_payload: Dict[str, Any] = {}
     pr_url = ""
     merge_executed = False
+    head_sha = ""
 
     if pr_number > 0:
         pr_lookup = _github_pr_by_number(repo_target, pr_number)
@@ -398,6 +457,7 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
             base_ref = pr_payload.get("base") if isinstance(pr_payload.get("base"), dict) else {}
             head = head or str(head_ref.get("ref") or "").strip()
             base = base or str(base_ref.get("ref") or "").strip() or default_branch
+            head_sha = str(head_ref.get("sha") or "").strip()
             pr_url = str(pr_payload.get("html_url") or "").strip()
             merge_executed = bool(pr_payload.get("merged"))
         else:
@@ -424,8 +484,61 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
             "message": "head_branch_not_detected",
         }
 
+    if not pr_number:
+        pr_lookup = _github_find_pull_by_head(repo_target, head, base or default_branch)
+        if pr_lookup.get("ok"):
+            pr_payload = pr_lookup.get("body") if isinstance(pr_lookup.get("body"), dict) else {}
+            pr_number = int(pr_payload.get("number") or 0)
+            pr_url = str(pr_payload.get("html_url") or "").strip()
+            merge_executed = bool(pr_payload.get("merged"))
+            head_ref = pr_payload.get("head") if isinstance(pr_payload.get("head"), dict) else {}
+            base_ref = pr_payload.get("base") if isinstance(pr_payload.get("base"), dict) else {}
+            head = head or str(head_ref.get("ref") or "").strip()
+            base = base or str(base_ref.get("ref") or "").strip() or default_branch
+            head_sha = str(head_ref.get("sha") or "").strip()
+
     compare_payload = _github_compare(repo_target, base or default_branch, head)
+    compare_reference = head
+    compare_error = ""
+    if not compare_payload.get("ok") and head_sha:
+        compare_reference = head_sha
+        compare_payload = _github_compare(repo_target, base or default_branch, head_sha)
+
     if not compare_payload.get("ok"):
+        compare_error = str(compare_payload.get("message") or "compare_failed")
+        if pr_payload:
+            return {
+                "ok": True,
+                "service": "orion_internal",
+                "mode": "github_compare_status",
+                "event": "GITHUB_COMPARE_STATUS_PARTIAL",
+                "provider": "github",
+                "visible_agent": visible_agent,
+                "repo": repo_target,
+                "repo_target": repo_target,
+                "backend_repo": _github_repo(),
+                "frontend_repo": _github_repo_web(),
+                "repository_details": repository_details,
+                "branch": head,
+                "branch_name": head,
+                "base_branch": base or default_branch,
+                "compare_ok": False,
+                "compare_error": compare_error,
+                "compare_reference": compare_reference,
+                "ahead_by": 0,
+                "behind_by": 0,
+                "files_changed": [],
+                "files_count": 0,
+                "commit_sha": head_sha or _github_branch_head_sha(repo_target, head),
+                "pr_number": int(pr_number or 0),
+                "pr_url": pr_url,
+                "merge_executed": bool(merge_executed),
+                "deploy_executed": False,
+                "merge_not_executed": not bool(merge_executed),
+                "deploy_not_executed": True,
+                "message": "PR resolvida; compare indisponível no GitHub para este head/base.",
+                "generated_at": _now_ts(),
+            }
         return {
             "ok": False,
             "service": "orion_internal",
@@ -436,17 +549,10 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
             "repo_target": repo_target,
             "branch_name": head,
             "base_branch": base or default_branch,
-            "message": str(compare_payload.get("message") or "compare_failed"),
+            "message": compare_error,
         }
 
-    if not pr_number:
-        pr_lookup = _github_find_pull_by_head(repo_target, head, base or default_branch)
-        if pr_lookup.get("ok"):
-            pr_payload = pr_lookup.get("body") if isinstance(pr_lookup.get("body"), dict) else {}
-            pr_number = int(pr_payload.get("number") or 0)
-            pr_url = str(pr_payload.get("html_url") or "").strip()
-            merge_executed = bool(pr_payload.get("merged"))
-    commit_sha = str(compare_payload.get("commit_sha") or "").strip()
+    commit_sha = str(compare_payload.get("commit_sha") or head_sha or "").strip()
     files_changed = list(compare_payload.get("files_changed") or [])
     return {
         "ok": True,
@@ -464,6 +570,7 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
         "branch_name": head,
         "base_branch": base or default_branch,
         "compare_ok": True,
+        "compare_reference": compare_reference,
         "ahead_by": int(compare_payload.get("ahead_by") or 0),
         "behind_by": int(compare_payload.get("behind_by") or 0),
         "files_changed": files_changed,
