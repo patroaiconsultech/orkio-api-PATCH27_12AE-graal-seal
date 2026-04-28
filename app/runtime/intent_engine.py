@@ -451,6 +451,9 @@ def build_intent_package(
             "requested_specialists": list((context or {}).get("sticky_selected_specialists") or []),
             "followup_mode": "progressive_dispatch_followup",
             "followup_subtype": followup_subtype or "continuation",
+            "response_body_mode": "executive_replace" if (followup_subtype or "").strip().lower() == "executive_format" else "",
+            "compact_dispatch_details": bool((followup_subtype or "").strip().lower() == "executive_format"),
+            "render_strategy_hint": "dispatch_executive_replace" if (followup_subtype or "").strip().lower() == "executive_format" else "",
         }
     elif runtime_op.get("kind") == "platform_audit" and _context_has_sticky_dispatch(context):
         runtime_op["contract_inherited_from_thread"] = bool(runtime_op.get("contract_inherited_from_thread") or _looks_like_sticky_dispatch_followup(text))
@@ -462,7 +465,9 @@ def build_intent_package(
             runtime_op["followup_mode"] = runtime_op.get("followup_mode") or "progressive_dispatch_followup"
             runtime_op["followup_subtype"] = runtime_op.get("followup_subtype") or _infer_sticky_dispatch_followup_subtype(text) or "continuation"
             if str(runtime_op.get("followup_subtype") or "").strip().lower() == "executive_format":
-                runtime_op["render_strategy_hint"] = "dispatch_executive_compact"
+                runtime_op["render_strategy_hint"] = "dispatch_executive_replace"
+                runtime_op["response_body_mode"] = "executive_replace"
+                runtime_op["compact_dispatch_details"] = True
     intent = runtime_op.get("kind") or "general_guidance"
 
     recommended_agents = ["orkio"]
