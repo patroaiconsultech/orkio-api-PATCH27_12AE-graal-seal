@@ -294,6 +294,47 @@ def _audit_scope(message: str) -> str:
     return "specialist" if any(marker in txt for marker in specialist_markers) else "standard"
 
 
+def _is_premium_platform_audit_request(message: str) -> bool:
+    txt = (message or "").strip().lower()
+    if not txt:
+        return False
+    premium_markers = (
+        "experiência premium",
+        "experiencia premium",
+        "irresistível",
+        "irresistivel",
+        "alto valor percebido",
+        "elegante",
+        "fluida",
+        "confiável",
+        "confiavel",
+        "onboarding",
+        "primeira impressão",
+        "primeira impressao",
+        "consistência visual",
+        "consistencia visual",
+        "wallet",
+        "billing",
+        "mobile",
+        "pwa",
+        "latência",
+        "latencia",
+    )
+    audit_markers = (
+        "varredura profunda",
+        "somente leitura",
+        "read only",
+        "multiagente",
+        "toda a equipe técnica interna",
+        "toda a equipe tecnica interna",
+        "plataforma inteira",
+        "melhorias necessárias",
+        "melhorias necessarias",
+        "premium",
+    )
+    return any(marker in txt for marker in premium_markers) and any(marker in txt for marker in audit_markers)
+
+
 def _audit_wants_full_execution(message: str, prepare_only: bool = False) -> bool:
     if prepare_only:
         return False
@@ -593,7 +634,9 @@ def _audit_specialist_views(scope: str) -> Dict[str, List[str]]:
 
 
 
-def _audit_selected_specialists(scope: str, include_frontend: bool = False) -> List[str]:
+def _audit_selected_specialists(scope: str, include_frontend: bool = False, premium_mode: bool = False) -> List[str]:
+    if premium_mode:
+        return ["auditor", "cto", "orion", "chris", "architect", "devops", "security", "memory_ops", "stage_manager"]
     selected = ["auditor", "cto", "orion"]
     if scope == "specialist" or include_frontend:
         selected.append("chris")
@@ -607,6 +650,11 @@ def _audit_dispatch_receipts(selected_specialists: List[str], scope: str) -> Lis
         "cto": "plano técnico incremental e pontos de correção",
         "orion": "roteamento seguro e consolidação executável",
         "chris": "impacto funcional e leitura de produto",
+        "architect": "arquitetura premium, onboarding e clareza estrutural",
+        "devops": "performance percebida, latência e observabilidade operacional",
+        "security": "confiança, transparência, controles e percepção de segurança",
+        "memory_ops": "continuidade, memória útil e persistência contextual",
+        "stage_manager": "ritmo da experiência, estados de transição e acabamento premium",
     }
     for agent in selected_specialists:
         receipts.append({
@@ -975,10 +1023,84 @@ def _build_dispatch_executive_sections(
     }
 
 
+
+def _build_premium_platform_audit_sections(selected_specialists: List[str]) -> Dict[str, Any]:
+    roster = ", ".join(selected_specialists) if selected_specialists else "auditor, cto, orion, chris"
+    return {
+        "executive_verdict": "A plataforma já tem base operacional forte, mas ainda não entrega acabamento premium consistente na primeira impressão, na fluidez do console e na tradução de poder técnico em valor percebido.",
+        "findings_by_specialty": {
+            "auditor": "Há maturidade operacional crescente, porém a percepção do usuário ainda sofre quando o sistema ecoa contratos internos em vez de respostas refinadas.",
+            "cto": "O núcleo já suporta governança e fluxo controlado; o próximo salto é transformar capacidade técnica em jornadas mais desejáveis e mais simples de entender.",
+            "orion": "A orquestração responde, mas a superfície final ainda precisa diferenciar auditoria, execução e experiência premium.",
+            "chris": "Valor percebido depende de primeira vitória rápida, linguagem de benefício e sensação de exclusividade funcional.",
+            "architect": "Onboarding, empty states e hierarquia visual ainda não mostram de imediato o que torna a plataforma única.",
+            "devops": "Latência, fallbacks e estados transitórios precisam parecer elegantes mesmo quando algo demora ou degrada.",
+            "security": "Confiança cresce quando o usuário percebe controle, transparência e previsibilidade das ações sensíveis.",
+            "memory_ops": "Continuidade entre conversas precisa parecer inteligente e útil, não apenas histórica.",
+            "stage_manager": "Falta um acabamento uniforme de ritmo, microinteração e progressão visual para parecer premium.",
+        },
+        "top_improvements": [
+            "Criar onboarding com promessa clara e primeira vitória em poucos cliques.",
+            "Redesenhar empty state do console com CTA principal e demonstração de valor.",
+            "Padronizar loading, erro e recuperação com linguagem premium e baixo ruído.",
+            "Mostrar contexto ativo, objetivo atual e próximo passo recomendado.",
+            "Refinar hierarquia visual do chat para reduzir densidade técnica percebida.",
+            "Padronizar respostas executivas mais curtas, claras e confiáveis.",
+            "Melhorar fluidez entre texto, voz e realtime com fallbacks elegantes.",
+            "Dar mais visibilidade à proposta de valor, wallet e Execution Blueprint quando aplicável.",
+            "Aumentar consistência entre branding, cor, espaçamento e ícones.",
+            "Expor melhor sinais de segurança e controle humano.",
+            "Melhorar mobile/PWA com foco em toque, leitura e continuidade.",
+            "Reduzir repetição estrutural nas respostas multiagente.",
+            "Evidenciar qualidade do produto já na primeira sessão.",
+            "Criar sensação de progressão e conquista no uso.",
+            "Aumentar observabilidade orientada à experiência percebida.",
+        ],
+        "quick_wins_24h": [
+            "Novo empty state premium no AppConsole.",
+            "Copy mais clara para onboarding e primeira ação.",
+            "Padronização visual de estados de loading e erro.",
+            "Resumo executivo padrão para respostas longas.",
+            "Mensagem de confiança/controle em ações sensíveis.",
+        ],
+        "improvements_7d": [
+            "Refino da hierarquia visual do chat e topbar.",
+            "Aprimoramento dos estados de voz/realtime/fallback.",
+            "Melhorias na UX de wallet, billing e preview de custo.",
+            "Context banner com objetivo atual e continuidade.",
+            "Indicadores de performance percebida e recuperação.",
+        ],
+        "improvements_30d": [
+            "Onboarding guiado adaptativo.",
+            "Sistema de memória útil com retomada contextual elegante.",
+            "Visualização progressiva multiagente no frontend.",
+            "Camada premium de métricas UX + observabilidade operacional.",
+            "Biblioteca de componentes premium consistente em web/PWA.",
+        ],
+        "premium_blockers": [
+            "Primeira impressão ainda não comunica imediatamente exclusividade e benefício.",
+            "Superfície do chat ainda expõe densidade técnica em excesso em alguns fluxos.",
+            "Estados transitórios e de erro ainda não parecem premium o suficiente.",
+            "Continuidade contextual e sensação de inteligência pessoal ainda podem evoluir muito.",
+        ],
+        "primary_product_adjustment": "Transformar a primeira experiência em uma jornada guiada para uma vitória concreta e memorável, sem exigir que o usuário interprete a arquitetura da plataforma.",
+        "primary_frontend_adjustment": "Reescrever o empty state e a hierarquia visual do AppConsole para comunicar valor, próxima ação e status do sistema com clareza premium.",
+        "primary_backend_adjustment": "Separar de forma ainda mais rígida os contratos de auditoria, execução e governança para que a superfície nunca volte a ecoar detalhes operacionais indevidos.",
+        "principal_premium_blocker": "Hoje o principal impeditivo de percepção premium é a distância entre a potência real do backend e o acabamento percebido na experiência inicial.",
+        "github_write_blocked": True,
+        "audit_mode": "premium_read_only_multiagent",
+        "specialist_fanout_applied": True,
+        "premium_roster": roster,
+    }
+
+
 def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str) -> Dict[str, Any]:
     scope = _audit_scope(inp.message)
-    direct_orion_diagnostic = _is_orion_direct_diagnostic_request(inp.message, visible_agent)
-    execute_full = _audit_wants_full_execution(inp.message, bool(inp.prepare_only)) or direct_orion_diagnostic
+    premium_mode = _is_premium_platform_audit_request(inp.message)
+    if premium_mode:
+        scope = "specialist"
+    direct_orion_diagnostic = _is_orion_direct_diagnostic_request(inp.message, visible_agent) and not premium_mode
+    execute_full = premium_mode or _audit_wants_full_execution(inp.message, bool(inp.prepare_only)) or direct_orion_diagnostic
     repo_targets = _build_repo_targets()
     audit_plan = {
         "requested_by": visible_agent,
@@ -1003,7 +1125,7 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         return {
             "ok": True,
             "service": "orion_internal",
-            "mode": "platform_self_audit",
+            "mode": "premium_platform_audit" if premium_mode else "platform_self_audit",
             "provider": "platform",
             "event": "PLATFORM_SELF_AUDIT_READY",
             "status": "ready",
@@ -1039,7 +1161,7 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
             "generated_at": _now_ts(),
         }
 
-    selected_specialists = ["orion"] if direct_orion_diagnostic else _audit_selected_specialists(scope, bool(inp.include_frontend))
+    selected_specialists = ["orion"] if direct_orion_diagnostic else _audit_selected_specialists(scope, bool(inp.include_frontend), premium_mode=premium_mode)
     dispatch_receipts = _audit_dispatch_receipts(selected_specialists, scope)
     specialist_reports = _audit_specialist_reports(selected_specialists, scope)
     followup_subtype = _infer_progressive_dispatch_followup_subtype(inp.message)
@@ -1064,15 +1186,15 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
     return {
         "ok": True,
         "service": "orion_internal",
-        "mode": "platform_self_audit",
+        "mode": "premium_platform_audit" if premium_mode else "platform_self_audit",
         "provider": "platform",
-        "event": "ORION_RUNTIME_DIAGNOSTIC_EXECUTED" if direct_orion_diagnostic else "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED",
+        "event": "PLATFORM_PREMIUM_AUDIT_EXECUTED" if premium_mode else ("ORION_RUNTIME_DIAGNOSTIC_EXECUTED" if direct_orion_diagnostic else "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED"),
         "status": "executed",
         "scope": scope,
-        "report_format": executive_sections.get("report_format") or ("orion_diagnostic_v1" if direct_orion_diagnostic else "dispatch_audit_v1"),
-        "delivery_contract": "orion_structured_dispatch_v1",
+        "report_format": ("premium_platform_audit_v1" if premium_mode else (executive_sections.get("report_format") or ("orion_diagnostic_v1" if direct_orion_diagnostic else "dispatch_audit_v1"))),
+        "delivery_contract": "premium_platform_audit_v1" if premium_mode else "orion_structured_dispatch_v1",
         "audit_payload_version": "dispatch_audit_envelope_v1",
-        "execution_mode": "read_only_dispatch",
+        "execution_mode": "premium_read_only_multiagent" if premium_mode else "read_only_dispatch",
         "founder_control_mode": "human_controlled_runtime_only",
         "auditability_status": "ready_for_persistence",
         "sticky_thread_dispatch_supported": True,
@@ -1102,7 +1224,9 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         "response_body_mode": executive_body_mode,
         "compact_dispatch_details": compact_dispatch_details,
         "technical_summary": (
-            "Síntese executiva progressiva aplicada sobre dispatch confirmado. O backend preservou evidências essenciais e reduziu repetição estrutural."
+            "Varredura premium multiagente executada em modo somente leitura. A equipe técnica consolidou melhorias de UX, confiança, fluidez, mobile/PWA, billing e performance percebida sem acionar GitHub nem escrita governada."
+            if premium_mode
+            else "Síntese executiva progressiva aplicada sobre dispatch confirmado. O backend preservou evidências essenciais e reduziu repetição estrutural."
             if followup_subtype == "executive_format"
             else "Aprofundamento progressivo aplicado sobre dispatch confirmado. A continuidade expandiu a leitura sem regressão de contrato."
             if followup_subtype
@@ -1119,10 +1243,14 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         "specialist_reports": body_specialist_reports,
         "specialist_reports_count": counts.get("specialist_reports_count", 0),
         "specialist_reports_appendix": specialist_reports_appendix,
-        "final_consolidation": executive_sections.get("final_consolidation") or (
-            "Orion consolidou a análise técnica objetiva como agente único visível. A resposta final deve sair assinada como Orion e não deve recair em PLATFORM_SELF_AUDIT_READY."
-            if direct_orion_diagnostic
-            else _audit_final_consolidation(selected_specialists, scope)
+        "final_consolidation": (
+            _build_premium_platform_audit_sections(selected_specialists).get("principal_premium_blocker")
+            if premium_mode
+            else executive_sections.get("final_consolidation") or (
+                "Orion consolidou a análise técnica objetiva como agente único visível. A resposta final deve sair assinada como Orion e não deve recair em PLATFORM_SELF_AUDIT_READY."
+                if direct_orion_diagnostic
+                else _audit_final_consolidation(selected_specialists, scope)
+            )
         ),
         "executive_diagnostic": executive_sections.get("executive_diagnostic") or "",
         "backend_assessment": executive_sections.get("backend_assessment") or "",
@@ -1131,6 +1259,20 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         "confirmed_evidence": executive_sections.get("confirmed_evidence") or "",
         "main_risk": executive_sections.get("main_risk") or "",
         "recommended_actions": executive_sections.get("recommended_actions") or [],
+        "executive_verdict": (_build_premium_platform_audit_sections(selected_specialists).get("executive_verdict") if premium_mode else ""),
+        "findings_by_specialty": (_build_premium_platform_audit_sections(selected_specialists).get("findings_by_specialty") if premium_mode else {}),
+        "top_improvements": (_build_premium_platform_audit_sections(selected_specialists).get("top_improvements") if premium_mode else []),
+        "quick_wins_24h": (_build_premium_platform_audit_sections(selected_specialists).get("quick_wins_24h") if premium_mode else []),
+        "improvements_7d": (_build_premium_platform_audit_sections(selected_specialists).get("improvements_7d") if premium_mode else []),
+        "improvements_30d": (_build_premium_platform_audit_sections(selected_specialists).get("improvements_30d") if premium_mode else []),
+        "premium_blockers": (_build_premium_platform_audit_sections(selected_specialists).get("premium_blockers") if premium_mode else []),
+        "primary_product_adjustment": (_build_premium_platform_audit_sections(selected_specialists).get("primary_product_adjustment") if premium_mode else ""),
+        "primary_frontend_adjustment": (_build_premium_platform_audit_sections(selected_specialists).get("primary_frontend_adjustment") if premium_mode else ""),
+        "primary_backend_adjustment": (_build_premium_platform_audit_sections(selected_specialists).get("primary_backend_adjustment") if premium_mode else ""),
+        "principal_premium_blocker": (_build_premium_platform_audit_sections(selected_specialists).get("principal_premium_blocker") if premium_mode else ""),
+        "github_write_blocked": bool(_build_premium_platform_audit_sections(selected_specialists).get("github_write_blocked")) if premium_mode else False,
+        "specialist_fanout_applied": bool(_build_premium_platform_audit_sections(selected_specialists).get("specialist_fanout_applied")) if premium_mode else False,
+        "audit_mode": _build_premium_platform_audit_sections(selected_specialists).get("audit_mode") if premium_mode else ("specialist" if scope == "specialist" else "standard"),
         "key_files": [
             "app/runtime/intent_engine.py",
             "app/routes/internal/orion_internal.py",
@@ -1155,6 +1297,11 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         ),
         "remediation_plan": (
             [
+                "1. Bloquear GitHub write path em auditoria premium read-only.",
+                "2. Executar fan-out multiagente obrigatório por especialidade.",
+                "3. Renderizar resposta final em A–J com foco em valor percebido.",
+                "4. Priorizar empty state, onboarding, fluidez e confiança.",
+            ] if premium_mode else [
                 "1. Preservar precedência do diagnóstico Orion-only sobre github_runtime_general.",
                 "2. Emitir ORION_RUNTIME_DIAGNOSTIC_EXECUTED como resposta principal.",
                 "3. Manter receipts e síntese final alinhados a Orion.",
