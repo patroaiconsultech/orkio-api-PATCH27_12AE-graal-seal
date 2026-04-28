@@ -856,6 +856,41 @@ def _build_dispatch_executive_sections(
         "O frontend não precisa reinterpretar o dispatch; basta consumir e renderizar o payload estruturado."
     )
     if progressive_followup:
+        if followup_subtype == "executive_format":
+            return {
+                "report_format": report_format,
+                "executive_diagnostic": (
+                    f"Diagnóstico executivo do dispatch concluído com {roster}. "
+                    "A leitura foi condensada para decisão diretiva, sem reexecutar nem repetir o bloco operacional completo."
+                ),
+                "backend_assessment": (
+                    "O backend já sustenta a thread sticky e o dispatch correto. "
+                    "Neste estágio, o papel da continuidade executiva é sintetizar, não reimprimir receipts e relatórios brutos."
+                ),
+                "frontend_assessment": (
+                    "A interface pode consumir esta síntese como corpo principal e deixar os detalhes operacionais para expansão secundária."
+                ),
+                "integration_assessment": (
+                    "Intent engine, dispatcher e stream continuam íntegros. "
+                    "A transformação aqui é exclusivamente de enquadramento da resposta, preservando o mesmo trilho técnico."
+                ),
+                "confirmed_evidence": (
+                    f"Dispatch preservado com especialistas={counts['selected_specialists_count']}, "
+                    f"receipts={counts['dispatch_receipts_count']} e reports={counts['specialist_reports_count']}."
+                ),
+                "main_risk": (
+                    "O risco residual é manter excesso de detalhe operacional no corpo principal quando o pedido já mudou para formato executivo."
+                ),
+                "recommended_actions": [
+                    "1. Exibir apenas síntese decisória no corpo principal.",
+                    "2. Preservar evidências essenciais e contagens do dispatch.",
+                    "3. Deixar receipts e specialist reports completos para expansão auditável.",
+                    "4. Manter o mesmo signer visível sem reiniciar o fluxo.",
+                ],
+                "final_consolidation": (
+                    "Veredito executivo: o dispatch multiagente permanece válido, o backend está estável no mesmo contrato da thread e o próximo passo é lapidar a apresentação sem tocar no motor operacional."
+                ),
+            }
         return {
             "report_format": report_format,
             "executive_diagnostic": (
