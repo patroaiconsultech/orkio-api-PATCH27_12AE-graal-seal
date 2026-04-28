@@ -82,6 +82,10 @@ def _infer_sticky_dispatch_followup_subtype(text: str) -> str:
 # GitHub Runtime Detection
 # =========================
 
+PATCH_SENTINEL_EXPECTED = "FOUNDER_APPROVAL_RUNTIME_SENTINEL_12BE_V1"
+PATCH_FEATURE_EXPECTED = "founder_approval_runtime_sentinel"
+PATCH_EXPECTED_BEHAVIOR = "startup_and_sse_expose_explicit_patch_identity"
+
 _GITHUB_RUNTIME_TERMS = [
     "github",
     "repo",
@@ -420,6 +424,9 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "transactional_flow": "branch_commit_pr",
             "receipt_required_steps": ["branch_created", "files_written", "commit_created", "compare_ok", "pull_request_opened"],
             "human_approval_source": "chat",
+            "patch_sentinel_expected": PATCH_SENTINEL_EXPECTED,
+            "patch_feature_expected": PATCH_FEATURE_EXPECTED,
+            "patch_expected_behavior": PATCH_EXPECTED_BEHAVIOR,
         }
 
     github_hit = _contains_any(txt, _GITHUB_RUNTIME_TERMS)
