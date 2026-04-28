@@ -85,6 +85,24 @@ CAPABILITY_EXECUTION_BINDINGS = {
         "allowed_agents": ["orkio", "orion", "auditor", "cto"],
         "write": False,
     },
+    "controlled_self_evolution_propose_only": {
+        "executor": "orion_internal.platform_self_evolution_plan",
+        "mode": "runtime",
+        "allowed_agents": ["orkio", "orion", "auditor", "cto", "chris"],
+        "write": False,
+    },
+    "premium_audit_backlog_generate": {
+        "executor": "orion_internal.platform_self_evolution_plan",
+        "mode": "runtime",
+        "allowed_agents": ["orkio", "orion", "auditor", "cto", "chris"],
+        "write": False,
+    },
+    "premium_audit_patch_candidate_select": {
+        "executor": "orion_internal.platform_self_evolution_plan",
+        "mode": "runtime",
+        "allowed_agents": ["orkio", "orion", "auditor", "cto", "chris"],
+        "write": False,
+    },
 }
 
 
@@ -102,6 +120,9 @@ CAPABILITY_REGISTRY = {
             "runtime_scan",
             "security_scan",
             "safe_patch_plan",
+            "controlled_self_evolution_propose_only",
+            "premium_audit_backlog_generate",
+            "premium_audit_patch_candidate_select",
         ],
         "triggers": [
             "default",
@@ -141,6 +162,9 @@ CAPABILITY_REGISTRY = {
             "runtime_scan",
             "security_scan",
             "safe_patch_plan",
+            "controlled_self_evolution_propose_only",
+            "premium_audit_backlog_generate",
+            "premium_audit_patch_candidate_select",
         ],
         "triggers": [
             "github",
@@ -178,6 +202,9 @@ CAPABILITY_REGISTRY = {
             "runtime_scan",
             "security_scan",
             "safe_patch_plan",
+            "controlled_self_evolution_propose_only",
+            "premium_audit_backlog_generate",
+            "premium_audit_patch_candidate_select",
             "technical_analysis",
             "risk_guard",
         ],
@@ -205,6 +232,9 @@ CAPABILITY_REGISTRY = {
             "repo_structure_scan",
             "routes_scan",
             "runtime_scan",
+            "controlled_self_evolution_propose_only",
+            "premium_audit_backlog_generate",
+            "premium_audit_patch_candidate_select",
         ],
         "triggers": [
             "cto",
@@ -258,6 +288,9 @@ CAPABILITY_REGISTRY = {
     "chris": {
         "role": "commercial_strategist",
         "capabilities": [
+            "controlled_self_evolution_propose_only",
+            "premium_audit_backlog_generate",
+            "premium_audit_patch_candidate_select",
             "github_repo_read",
             "platform_self_audit",
             "repo_structure_scan",
