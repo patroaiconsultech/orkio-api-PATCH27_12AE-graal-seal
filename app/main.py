@@ -6359,6 +6359,156 @@ def _is_runtime_source_audit_request(user_text: str) -> bool:
     ]
     return any(re.search(p, txt, flags=re.IGNORECASE) for p in patterns)
 
+def _runtime_orion_dispatch_request_flags(user_text: str) -> Dict[str, Any]:
+    txt = (user_text or "").strip()
+    normalized = txt.lower()
+    if not normalized:
+        return {"requested": False, "requested_specialists": [], "reason": ""}
+
+    specialist_aliases = [
+        (r"\barquiteto\b", "architect"),
+        (r"\barchitect\b", "architect"),
+        (r"\bauditor\b", "auditor"),
+        (r"\bcto\b", "cto"),
+        (r"\bdevops\b", "devops"),
+        (r"\bsre\b", "devops"),
+        (r"\bseguran[çc]a\b", "security"),
+        (r"\bsecurity\b", "security"),
+    ]
+    requested_specialists: List[str] = []
+    seen_specialists: set[str] = set()
+    for pattern, slug in specialist_aliases:
+        if re.search(pattern, normalized, flags=re.IGNORECASE):
+            if slug not in seen_specialists:
+                requested_specialists.append(slug)
+                seen_specialists.add(slug)
+
+    wants_dispatch_patterns = [
+        r"acione\s+sua\s+equipe\s+t[ée]cnica",
+        r"acione\s+a\s+equipe\s+t[ée]cnica",
+        r"acione\s+sua\s+equipe\s+interna",
+        r"acione\s+seu\s+squad\s+t[ée]cnico",
+        r"fa[çc]a\s+uma\s+varredura\s+operacional",
+        r"varredura\s+t[ée]cnica",
+        r"diagn[óo]stico\s+executivo",
+        r"diagn[óo]stico\s+t[ée]cnico",
+        r"auditoria\s+operacional",
+        r"auditoria\s+t[ée]cnica",
+        r"runtime\s+diagnostic",
+        r"execution\s+receipts",
+        r"dispatch\s+receipts",
+        r"specialist\s+reports",
+    ]
+    wants_dispatch = any(re.search(p, normalized, flags=re.IGNORECASE) for p in wants_dispatch_patterns)
+
+    if not wants_dispatch and len(requested_specialists) >= 2:
+        wants_dispatch = bool(re.search(r"diagn[óo]stico|auditoria|varredura|runtime|opera(cional|tional)", normalized, flags=re.IGNORECASE))
+
+    if not wants_dispatch:
+        return {"requested": False, "requested_specialists": [], "reason": ""}
+
+    if not requested_specialists:
+        requested_specialists = ["architect", "auditor", "devops", "security"]
+
+    return {
+        "requested": True,
+        "requested_specialists": requested_specialists,
+        "reason": "forced_orion_runtime_dispatch",
+    }
+
+
+def _canonicalize_platform_audit_runtime_message(
+    user_text: str,
+    *,
+    requested_specialists: Optional[List[str]] = None,
+    direct_orion: bool = True,
+) -> str:
+    specialists = [str(x).strip().lower() for x in (requested_specialists or []) if str(x).strip()]
+    if not specialists:
+        specialists = ["architect", "auditor", "devops", "security"]
+
+    visible_agent = "orion" if direct_orion else "orkio"
+    specialist_csv = ", ".join(specialists)
+    original = (user_text or "").strip()
+
+    return (
+        "AUDITORIA TÉCNICA OPERACIONAL READ-ONLY. "
+        f"Agente visível final: {visible_agent}. "
+        f"Acione a equipe técnica interna com especialistas: {specialist_csv}. "
+        "Execute diagnóstico real de runtime/chat, produza selected_specialists, dispatch_receipts, "
+        "specialist_reports, technical_summary, final_consolidation e execution_depth=dispatch. "
+        "Não responda em modo consultivo genérico. Preserve Orion como signer visível final. "
+        f"Pedido original do usuário: {original}"
+    )
+
+
+def _apply_forced_orion_runtime_dispatch_enrichment(
+    runtime_enrichment: Optional[Dict[str, Any]],
+    user_text: str,
+    *,
+    requested_names: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    flags = _runtime_orion_dispatch_request_flags(user_text)
+    normalized = dict(runtime_enrichment or {})
+    if not flags.get("requested"):
+        return normalized
+
+    requested_specialists = list(flags.get("requested_specialists") or ["architect", "auditor", "devops", "security"])
+
+    intent_package = normalized.get("intent_package") if isinstance(normalized.get("intent_package"), dict) else {}
+    runtime_operation = intent_package.get("runtime_operation") if isinstance(intent_package.get("runtime_operation"), dict) else {}
+    runtime_operation.update({
+        "kind": "platform_audit",
+        "execution_depth": "dispatch",
+        "prepare_only": False,
+        "visible_only_agent": "orion",
+        "response_profile": "orion_objective_diagnostic",
+        "include_frontend": True,
+        "audit_mode": "specialist",
+        "force_dispatch": True,
+        "direct_orion": True,
+        "requested_specialists": requested_specialists,
+    })
+    intent_package["runtime_operation"] = runtime_operation
+    intent_package["requires_runtime_execution"] = True
+    normalized["intent_package"] = intent_package
+
+    planner_snapshot = normalized.get("planner_snapshot") if isinstance(normalized.get("planner_snapshot"), dict) else {}
+    planner_snapshot.update({
+        "execution_depth": "dispatch",
+        "visible_only_agent": "orion",
+        "preferred_visible_node": "orion",
+        "response_profile": "orion_objective_diagnostic",
+        "audit_mode": "specialist",
+        "requires_capability": "platform_audit",
+        "prepare_only": False,
+    })
+    normalized["planner_snapshot"] = planner_snapshot
+
+    dag_snapshot = normalized.get("dag_snapshot") if isinstance(normalized.get("dag_snapshot"), dict) else {}
+    dag_snapshot.update({
+        "execution_depth": "dispatch",
+        "preferred_visible_node": "orion",
+        "visible_node": "orion",
+        "route_applied": True,
+    })
+    normalized["dag_snapshot"] = dag_snapshot
+
+    runtime_hints = normalized.get("runtime_hints") if isinstance(normalized.get("runtime_hints"), dict) else {}
+    runtime_hints.update({
+        "force_runtime_execution": True,
+        "force_runtime_dispatch": True,
+        "force_single_visible_agent": "orion",
+        "dispatch_requested_specialists": requested_specialists,
+        "dispatch_request_reason": str(flags.get("reason") or "forced_orion_runtime_dispatch"),
+        "explicit_requested_agents": list(requested_names or ["orion"]),
+        "multi_agent_requested": True,
+    })
+    normalized["runtime_hints"] = runtime_hints
+
+    return normalized
+
+
 def _runtime_role_is_technical(role: Any) -> bool:
     normalized = str(role or "").strip().lower()
     return normalized in {"orchestrator", "cto", "architect", "engineer", "auditor", "devops", "specialist"}
@@ -9522,6 +9672,13 @@ def _execute_capability_if_authorized(
 
     intent_package = ((runtime_enrichment or {}).get("intent_package") or {})
     runtime_operation = intent_package.get("runtime_operation") if isinstance(intent_package.get("runtime_operation"), dict) else {}
+    requested_specialists = runtime_operation.get("requested_specialists") if isinstance(runtime_operation.get("requested_specialists"), list) else None
+    if runtime_kind == "platform_audit" and bool(runtime_operation.get("force_dispatch")):
+        txt = _canonicalize_platform_audit_runtime_message(
+            txt,
+            requested_specialists=requested_specialists,
+            direct_orion=bool(runtime_operation.get("direct_orion", True)),
+        )
     prepare_only = bool(
         runtime_operation.get("prepare_only", planner_snapshot.get("prepare_only", False))
     )
@@ -10053,6 +10210,21 @@ def chat(
         except Exception:
             pass
         runtime_enrichment = {}
+
+    try:
+        forced_dispatch_flags = _runtime_orion_dispatch_request_flags(inp.message)
+        if forced_dispatch_flags.get("requested"):
+            runtime_enrichment = _apply_forced_orion_runtime_dispatch_enrichment(
+                runtime_enrichment,
+                inp.message,
+                requested_names=requested_names,
+            )
+            _forced_orion = _pick_target_agent_by_slug(target_agents, "orion")
+            if _forced_orion is not None:
+                target_agents = [_forced_orion]
+                requested_names = ["orion"]
+    except Exception:
+        pass
 
     if runtime_enrichment.get("planner_snapshot") and len(target_agents) > 1:
         target_agents = _reorder_agents_by_planner(target_agents, runtime_enrichment.get("planner_snapshot"))
@@ -13590,6 +13762,21 @@ async def chat_stream(
         except Exception:
             pass
         runtime_enrichment = {}
+
+    try:
+        forced_dispatch_flags = _runtime_orion_dispatch_request_flags(message)
+        if forced_dispatch_flags.get("requested"):
+            runtime_enrichment = _apply_forced_orion_runtime_dispatch_enrichment(
+                runtime_enrichment,
+                message,
+                requested_names=requested_names,
+            )
+            _forced_orion = _pick_target_agent_by_slug(target_agents, "orion")
+            if _forced_orion is not None:
+                target_agents = [_forced_orion]
+                requested_names = ["orion"]
+    except Exception:
+        pass
 
     if runtime_enrichment.get("planner_snapshot") and len(target_agents) > 1:
         target_agents = _reorder_agents_by_planner(target_agents, runtime_enrichment.get("planner_snapshot"))
