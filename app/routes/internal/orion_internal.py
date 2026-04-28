@@ -13,9 +13,9 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/internal/orion", tags=["orion_internal"])
 
-PATCH_SENTINEL = "CONTROLLED_SELF_EVOLUTION_SENTINEL_12BH_V1"
-PATCH_FEATURE = "controlled_self_evolution_propose_only"
-PATCH_EXPECTED_BEHAVIOR = "propose_only_backlog_selection_without_github_write"
+PATCH_SENTINEL = "FRONTEND_REPO_EMISSION_SENTINEL_12BI_V1"
+PATCH_FEATURE = "frontend_repo_target_hard_binding_and_proposal_file_emission"
+PATCH_EXPECTED_BEHAVIOR = "frontend_repo_hard_binding_and_proposal_patch_file_emission"
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -52,7 +52,7 @@ def _default_branch() -> str:
 
 
 def _github_write_enabled() -> bool:
-    return (
+    return _bool_env("GITHUB_WRITE_RUNTIME_ENABLED", False) or (
         _bool_env("ENABLE_GITHUB_BRIDGE", False)
         and _bool_env("GITHUB_AUTOMATION_ALLOWED", False)
         and _bool_env("AUTO_CODE_EMISSION_ENABLED", False)
@@ -60,7 +60,11 @@ def _github_write_enabled() -> bool:
 
 
 def _github_pr_enabled() -> bool:
-    return _bool_env("GITHUB_PR_RUNTIME_ENABLED", False) and _bool_env("AUTO_PR_WRITE_ENABLED", False)
+    return _bool_env("GITHUB_PR_RUNTIME_ENABLED", False) and (
+        _bool_env("AUTO_PR_BACKEND_ENABLED", False)
+        or _bool_env("AUTO_PR_FRONTEND_ENABLED", False)
+        or _bool_env("AUTO_PR_WRITE_ENABLED", False)
+    )
 
 
 def _main_direct_allowed() -> bool:
@@ -148,6 +152,8 @@ def _safe_patch_policy() -> Dict[str, Any]:
         ],
         "pr_open_requires_branch_and_commit": True,
         "approval_grant_expands_transaction_prerequisites": True,
+        "frontend_repo_target_hard_binding": True,
+        "proposal_to_file_write_emission": True,
         "patch_sentinel": PATCH_SENTINEL,
         "patch_feature": PATCH_FEATURE,
         "patch_expected_behavior": PATCH_EXPECTED_BEHAVIOR,
