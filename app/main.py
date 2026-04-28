@@ -1084,6 +1084,7 @@ def _is_production_env() -> bool:
     return _app_env() == "production"
 
 APP_VERSION = "2.4.0"
+PATCH_SENTINEL = "DISPATCH_HARD_BLOCK_V1"
 RAG_MODE = "keyword"
 
 def patch_id() -> str:
@@ -3134,10 +3135,11 @@ def _startup_runtime_fingerprint():
     """
     try:
         logger.warning(
-            "ORKIO_API_STARTUP patch=%s version=%s build=%s",
+            "ORKIO_API_STARTUP patch=%s version=%s build=%s sentinel=%s",
             patch_id(),
             APP_VERSION,
             _safe_build_fingerprint(),
+            PATCH_SENTINEL,
         )
         logger.warning(
             "ORKIO_API_ROUTES register=%s validate_access_code=%s summit_session_start=%s audio_transcriptions=%s realtime_start=%s realtime_end=%s",
@@ -6441,6 +6443,47 @@ def _canonicalize_platform_audit_runtime_message(
         f"Pedido original do usuário: {original}"
     )
 
+
+
+
+def _should_force_runtime_dispatch_over_catalog(
+    user_text: str,
+    runtime_enrichment: Optional[Dict[str, Any]] = None,
+) -> bool:
+    try:
+        flags = _runtime_orion_dispatch_request_flags(user_text)
+        if bool(flags.get("requested")):
+            return True
+    except Exception:
+        pass
+
+    if not isinstance(runtime_enrichment, dict):
+        return False
+
+    intent_package = runtime_enrichment.get("intent_package") if isinstance(runtime_enrichment.get("intent_package"), dict) else {}
+    runtime_operation = intent_package.get("runtime_operation") if isinstance(intent_package.get("runtime_operation"), dict) else {}
+    planner_snapshot = runtime_enrichment.get("planner_snapshot") if isinstance(runtime_enrichment.get("planner_snapshot"), dict) else {}
+    runtime_hints = runtime_enrichment.get("runtime_hints") if isinstance(runtime_enrichment.get("runtime_hints"), dict) else {}
+
+    runtime_kind = str(runtime_operation.get("kind") or "").strip().lower()
+    execution_depth = str(
+        runtime_operation.get("execution_depth")
+        or planner_snapshot.get("execution_depth")
+        or ""
+    ).strip().lower()
+    response_profile = str(
+        runtime_operation.get("response_profile")
+        or planner_snapshot.get("response_profile")
+        or ""
+    ).strip().lower()
+
+    return bool(
+        runtime_operation.get("force_dispatch")
+        or runtime_hints.get("force_runtime_dispatch")
+        or execution_depth == "dispatch"
+        or runtime_kind == "platform_audit"
+        or response_profile == "orion_objective_diagnostic"
+    )
 
 def _apply_forced_orion_runtime_dispatch_enrichment(
     runtime_enrichment: Optional[Dict[str, Any]],
@@ -10400,21 +10443,14 @@ def chat(
                     orion_operational_maturity_flags = _orion_operational_maturity_request_flags(inp.message)
                     hidden_catalog_flags = _hidden_catalog_request_flags(inp.message)
 
-                    runtime_operation_for_dispatch = (
-                        ((runtime_enrichment or {}).get("intent_package") or {}).get("runtime_operation", {})
-                        if isinstance(((runtime_enrichment or {}).get("intent_package") or {}).get("runtime_operation", {}), dict)
-                        else {}
-                    )
-                    force_runtime_dispatch = bool(
-                        runtime_operation_for_dispatch.get("force_dispatch")
-                        or runtime_operation_for_dispatch.get("execution_depth") == "dispatch"
-                        or ((runtime_enrichment or {}).get("runtime_hints") or {}).get("force_runtime_dispatch")
+                    force_runtime_dispatch = _should_force_runtime_dispatch_over_catalog(
+                        inp.message,
+                        runtime_enrichment=runtime_enrichment,
                     )
 
-                    # PATCH27_12AL:
+                    # PATCH27_12AN:
                     # quando houver dispatch forçado para Orion/equipe técnica interna,
-                    # não deixar o caminho de capability inventory sequestrar a resposta.
-                    # Primeiro tenta execução real; só cai para inventário se não houver resultado tratado.
+                    # bloquear qualquer trilho de catálogo/inventário e priorizar execução real.
                     if force_runtime_dispatch and should_execute_runtime:
                         execution_result = _execute_capability_if_authorized(
                             inp.message,
@@ -10424,7 +10460,9 @@ def chat(
                         if not (execution_result and execution_result.get("handled")):
                             execution_result = None
 
-                    if execution_result and execution_result.get("handled"):
+                    if force_runtime_dispatch:
+                        capability_inventory_answer = None
+                    elif execution_result and execution_result.get("handled"):
                         capability_inventory_answer = None
                     elif orion_operational_maturity_flags.get("requested") and _canonical_runtime_agent_slug(final_signer_agent_name) == "orion":
                         capability_inventory_answer = _build_runtime_operational_maturity_text(
@@ -13942,7 +13980,7 @@ async def chat_stream(
     async def gen():
         # First status quickly
         try:
-            yield sse_event("status", {"phase": "running", "status": "Gerando resposta...", "thread_id": tid, "trace_id": trace_id})
+            yield sse_event("status", {"phase": "running", "status": "Gerando resposta...", "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
             yield sse_execution(
                 "stream_started",
                 "Execução iniciada",
@@ -14203,7 +14241,23 @@ async def chat_stream(
                             orion_self_knowledge_flags = _orion_self_knowledge_request_flags(message)
                             orion_operational_maturity_flags = _orion_operational_maturity_request_flags(message)
                             hidden_catalog_flags = _hidden_catalog_request_flags(message)
-                            if orion_operational_maturity_flags.get("requested") and _canonical_runtime_agent_slug(ag_name) == "orion":
+                            force_runtime_dispatch = _should_force_runtime_dispatch_over_catalog(
+                                message,
+                                runtime_enrichment=runtime_enrichment,
+                            )
+
+                            if force_runtime_dispatch and should_execute_runtime:
+                                execution_result = _execute_capability_if_authorized(
+                                    message,
+                                    trace_id=trace_id,
+                                    runtime_enrichment=runtime_enrichment,
+                                )
+                                if not (execution_result and execution_result.get("handled")):
+                                    execution_result = None
+
+                            if force_runtime_dispatch:
+                                capability_inventory_answer = None
+                            elif orion_operational_maturity_flags.get("requested") and _canonical_runtime_agent_slug(ag_name) == "orion":
                                 capability_inventory_answer = _build_runtime_operational_maturity_text(
                                     db=db,
                                     org=org,
@@ -14341,7 +14395,7 @@ async def chat_stream(
                                 detail="O provider excedeu o tempo máximo configurado para o stream.",
                             )
                             yield sse_event("error", {"code": "TIMEOUT", "message": "Stream excedeu tempo máximo."})
-                            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id})
+                            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
                         except Exception:
                             pass
                         try:
@@ -14367,7 +14421,8 @@ async def chat_stream(
                 if capability_inventory_answer is not None:
                     ans_obj = {"text": capability_inventory_answer, "usage": None, "model": "runtime_capability_inventory"}
                 elif execution_result and execution_result.get("handled"):
-                    ans_obj = {"text": _build_execution_result_payload(execution_result), "usage": None, "model": "github_capability"}
+                    _execution_model = "runtime_capability_execution" if str(execution_result.get("provider") or "").strip().lower() == "platform" else "github_capability"
+                    ans_obj = {"text": _build_execution_result_payload(execution_result), "usage": None, "model": _execution_model}
                 else:
                     ans_obj = {"text": blocked_reply, "usage": None, "model": "summit_guard"} if blocked_reply is not None else await llm_task
 
@@ -14454,7 +14509,7 @@ async def chat_stream(
                                 code="SERVER_BUSY",
                             )
                             yield sse_event("error", {"code": "SERVER_BUSY", "message": msg or "SERVER_BUSY", "error": msg, "trace_id": trace_id, "agent_id": ag_id, "agent_name": ag_name})
-                            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id})
+                            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
                         except Exception:
                             return
                         return
@@ -14484,9 +14539,13 @@ async def chat_stream(
                         return
                     continue
 
+                _execution_depth_dbg = str((execution_result or {}).get("execution_depth") or route_debug_payload.get("execution_depth") or "").strip().lower()
+                _execution_event_dbg = str((execution_result or {}).get("event") or "").strip()
                 answer_source = (
                     "capability_inventory"
                     if capability_inventory_answer is not None
+                    else "dispatch_execution"
+                    if execution_result and execution_result.get("handled") and (_execution_depth_dbg == "dispatch" or _execution_event_dbg == "ORION_RUNTIME_DIAGNOSTIC_EXECUTED")
                     else "runtime_execution"
                     if execution_result and execution_result.get("handled")
                     else "policy_guard"
@@ -14494,6 +14553,7 @@ async def chat_stream(
                     else "provider"
                 )
                 _assistant_answer_debug = {
+                    "patch_sentinel": PATCH_SENTINEL,
                     "answer_source": answer_source,
                     "followup_continuation_applied": followup_continuation_applied,
                     "provider_refusal_detected": provider_refusal_detected,
@@ -14808,9 +14868,10 @@ async def chat_stream(
                     "agent_name": _stream_final_agent_name,
                     "voice_id": _stream_final_voice_id,
                     "avatar_url": _stream_final_avatar_url,
+                    "patch_sentinel": PATCH_SENTINEL,
                 }
                 if _stream_done_debug:
-                    payload["diagnostics"] = dict(_stream_done_debug)
+                    payload["diagnostics"] = {**dict(_stream_done_debug), "patch_sentinel": PATCH_SENTINEL, "build_fingerprint": _safe_build_fingerprint()}
                 if final_runtime_enrichment and final_runtime_enrichment.get("runtime_hints"):
                     payload["runtime_hints"] = final_runtime_enrichment.get("runtime_hints")
                 yield sse_execution(
@@ -14842,7 +14903,7 @@ async def chat_stream(
                     executed_nodes=list(_stream_executed_nodes or []),
                 )
                 yield sse_event("error", {"message": str(fatal_err), "error": str(fatal_err), "trace_id": trace_id})
-                yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id})
+                yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
             except Exception:
                 return
 
@@ -14860,6 +14921,7 @@ async def chat_stream(
         media_type="text/event-stream",
         headers={
             "X-Trace-Id": trace_id,
+            "X-Patch-Sentinel": PATCH_SENTINEL,
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
@@ -15056,19 +15118,19 @@ async def orchestrate(
             )
         except Exception as e:
             yield sse_event("error", {"message": f"Planner failed: {e}", "trace_id": trace_id})
-            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id})
+            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
             return
 
         if not planner_result or not (planner_result.get("text") or "").strip():
             yield sse_event("error", {"message": "Orkio não conseguiu gerar um plano de execução.", "trace_id": trace_id})
-            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id})
+            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
             return
 
         plan = _parse_orchestration_plan(planner_result["text"])
         if not plan:
             # Fallback: treat as regular team message
             yield sse_event("error", {"message": "Plano inválido. Tente reformular a tarefa.", "trace_id": trace_id})
-            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id})
+            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
             return
 
         # Emit the plan to frontend
@@ -15255,7 +15317,7 @@ async def orchestrate(
 
         # Done global
         try:
-            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id})
+            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
         except Exception:
             return
 
@@ -15265,6 +15327,7 @@ async def orchestrate(
         media_type="text/event-stream",
         headers={
             "X-Trace-Id": trace_id,
+            "X-Patch-Sentinel": PATCH_SENTINEL,
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
