@@ -1231,7 +1231,9 @@ def _is_production_env() -> bool:
     return _app_env() == "production"
 
 APP_VERSION = "2.4.0"
-PATCH_SENTINEL = "DISPATCH_HARD_BLOCK_V1"
+PATCH_SENTINEL = "FOUNDER_APPROVAL_RUNTIME_SENTINEL_12BE_V1"
+PATCH_FEATURE = "founder_approval_runtime_sentinel"
+PATCH_EXPECTED_BEHAVIOR = "startup_and_sse_expose_explicit_patch_identity"
 RAG_MODE = "keyword"
 
 def patch_id() -> str:
@@ -1243,6 +1245,17 @@ def patch_id() -> str:
     except Exception:
         pass
     return "unknown"
+
+
+def _patch_diagnostics_snapshot(extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    snap: Dict[str, Any] = {
+        "patch_sentinel": PATCH_SENTINEL,
+        "patch_feature": PATCH_FEATURE,
+        "patch_expected_behavior": PATCH_EXPECTED_BEHAVIOR,
+    }
+    if isinstance(extra, dict):
+        snap.update(extra)
+    return snap
 
 
 def new_id() -> str:
@@ -3282,11 +3295,13 @@ def _startup_runtime_fingerprint():
     """
     try:
         logger.warning(
-            "ORKIO_API_STARTUP patch=%s version=%s build=%s sentinel=%s",
+            "ORKIO_API_STARTUP patch=%s version=%s build=%s sentinel=%s feature=%s behavior=%s",
             patch_id(),
             APP_VERSION,
             _safe_build_fingerprint(),
             PATCH_SENTINEL,
+            PATCH_FEATURE,
+            PATCH_EXPECTED_BEHAVIOR,
         )
         logger.warning(
             "ORKIO_API_ROUTES register=%s validate_access_code=%s summit_session_start=%s audio_transcriptions=%s realtime_start=%s realtime_end=%s",
@@ -6073,6 +6088,19 @@ def _github_write_authorization_flags(user_text: str) -> Dict[str, Any]:
             flags=re.IGNORECASE,
         )
     )
+
+    # PATCH27_12BD — Founder approval for patch/PR on a branch implicitly includes
+    # the prerequisite transactional steps. This avoids a dead-end where the founder
+    # authorizes the patch/PR outcome but create_branch / prepare_commit remain blocked.
+    if auth_anchor and not flags["allow_main"]:
+        if flags["allow_patch"] or flags["allow_pr"]:
+            flags["allow_branch"] = True
+            flags["allow_commit"] = True
+        elif flags["allow_branch"] and re.search(r"\b(patch|arquivo|file|commit|pr|pull request)\b", auth_window, flags=re.IGNORECASE):
+            flags["allow_patch"] = True
+            flags["allow_commit"] = True
+            flags["allow_pr"] = bool(flags["allow_pr"] or re.search(r"\bpr\b", auth_window, flags=re.IGNORECASE) or "pull request" in auth_window)
+
     flags["grant"] = any(bool(flags[k]) for k in ("allow_branch", "allow_patch", "allow_commit", "allow_pr", "allow_main"))
     return flags
 
@@ -6180,7 +6208,7 @@ def _github_write_policy_snapshot(
         "repository_targets": github.get("repository_targets") if isinstance(github.get("repository_targets"), dict) else {},
     }
 
-def _format_github_write_policy_text(snapshot: Dict[str, Any]) -> str:
+def _format_github_write_policy_text(snapshot: Dict[str, Any], *, thread_id: Optional[str] = None, payload: Optional[Dict[str, Any]] = None) -> str:
     approval = snapshot.get("active_approval") if isinstance(snapshot.get("active_approval"), dict) else {}
     targets = snapshot.get("repository_targets") if isinstance(snapshot.get("repository_targets"), dict) else {}
     lines = [
@@ -6202,7 +6230,7 @@ def _format_github_write_policy_text(snapshot: Dict[str, Any]) -> str:
         lines.append(f"- actions_allowed: {', '.join(list(approval.get('actions_allowed') or [])) or 'n/d'}")
         scope_files = list(approval.get("scope_files") or [])
         lines.append(f"- scope_files: {', '.join(scope_files) if scope_files else 'livre'}")
-        receipts = _github_write_get_execution_receipts(snapshot.get("org_slug") or "default", thread_id, payload)
+        receipts = _github_write_get_execution_receipts(snapshot.get("org_slug") or "default", thread_id, payload) if (thread_id or payload) else {}
         if receipts:
             lines.append("")
             lines.append(_github_write_transaction_receipts_text(receipts))
@@ -6302,11 +6330,11 @@ def _build_github_write_response_text(
         if approval.get("deny_merge"):
             lines.append("- merge: não autorizado")
         lines.append("")
-        lines.append(_format_github_write_policy_text(_github_write_policy_snapshot(org=org, thread_id=thread_id, payload=payload, db=db)))
+        lines.append(_format_github_write_policy_text(_github_write_policy_snapshot(org=org, thread_id=thread_id, payload=payload, db=db), thread_id=thread_id, payload=payload))
         return "\n".join(lines)
 
     if not req_flags.get("requested"):
-        return _format_github_write_policy_text(snapshot)
+        return _format_github_write_policy_text(snapshot, thread_id=thread_id, payload=payload)
 
     approval = snapshot.get("active_approval") if isinstance(snapshot.get("active_approval"), dict) else {}
     if not approval:
@@ -6319,11 +6347,13 @@ def _build_github_write_response_text(
         ) if bool(req_flags.get(name))]
         requested_paths = list(req_flags.get("paths") or [])
         confirmation_parts = []
-        if req_flags.get("create_branch"):
+        implied_branch = bool(req_flags.get("create_branch") or req_flags.get("apply_patch") or req_flags.get("open_pr"))
+        implied_commit = bool(req_flags.get("prepare_commit") or req_flags.get("apply_patch") or req_flags.get("open_pr"))
+        if implied_branch:
             confirmation_parts.append("criar branch")
         if req_flags.get("apply_patch"):
             confirmation_parts.append("aplicar patch")
-        if req_flags.get("prepare_commit"):
+        if implied_commit:
             confirmation_parts.append("preparar commit")
         if req_flags.get("open_pr"):
             confirmation_parts.append("abrir PR")
@@ -15245,7 +15275,8 @@ async def chat_stream(
                                 detail="O provider excedeu o tempo máximo configurado para o stream.",
                             )
                             yield sse_event("error", {"code": "TIMEOUT", "message": "Stream excedeu tempo máximo."})
-                            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
+                            yield sse_event("done_diagnostics", _patch_diagnostics_snapshot({"thread_id": tid, "trace_id": trace_id}))
+                            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, **_patch_diagnostics_snapshot()})
                         except Exception:
                             pass
                         try:
@@ -15359,7 +15390,7 @@ async def chat_stream(
                                 code="SERVER_BUSY",
                             )
                             yield sse_event("error", {"code": "SERVER_BUSY", "message": msg or "SERVER_BUSY", "error": msg, "trace_id": trace_id, "agent_id": ag_id, "agent_name": ag_name})
-                            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
+                            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, **_patch_diagnostics_snapshot()})
                         except Exception:
                             return
                         return
@@ -15851,7 +15882,7 @@ async def chat_stream(
                     executed_nodes=list(_stream_executed_nodes or []),
                 )
                 yield sse_event("error", {"message": str(fatal_err), "error": str(fatal_err), "trace_id": trace_id})
-                yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
+                yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, **_patch_diagnostics_snapshot()})
             except Exception:
                 return
 
@@ -15870,6 +15901,8 @@ async def chat_stream(
         headers={
             "X-Trace-Id": trace_id,
             "X-Patch-Sentinel": PATCH_SENTINEL,
+            "X-Patch-Feature": PATCH_FEATURE,
+            "X-Patch-Expected-Behavior": PATCH_EXPECTED_BEHAVIOR,
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
@@ -16066,19 +16099,19 @@ async def orchestrate(
             )
         except Exception as e:
             yield sse_event("error", {"message": f"Planner failed: {e}", "trace_id": trace_id})
-            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
+            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, **_patch_diagnostics_snapshot()})
             return
 
         if not planner_result or not (planner_result.get("text") or "").strip():
             yield sse_event("error", {"message": "Orkio não conseguiu gerar um plano de execução.", "trace_id": trace_id})
-            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
+            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, **_patch_diagnostics_snapshot()})
             return
 
         plan = _parse_orchestration_plan(planner_result["text"])
         if not plan:
             # Fallback: treat as regular team message
             yield sse_event("error", {"message": "Plano inválido. Tente reformular a tarefa.", "trace_id": trace_id})
-            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
+            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, **_patch_diagnostics_snapshot()})
             return
 
         # Emit the plan to frontend
@@ -16265,7 +16298,8 @@ async def orchestrate(
 
         # Done global
         try:
-            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, "patch_sentinel": PATCH_SENTINEL})
+            yield sse_event("done_diagnostics", _patch_diagnostics_snapshot({"thread_id": tid, "trace_id": trace_id}))
+            yield sse_event("done", {"done": True, "thread_id": tid, "trace_id": trace_id, **_patch_diagnostics_snapshot()})
         except Exception:
             return
 
@@ -16276,6 +16310,8 @@ async def orchestrate(
         headers={
             "X-Trace-Id": trace_id,
             "X-Patch-Sentinel": PATCH_SENTINEL,
+            "X-Patch-Feature": PATCH_FEATURE,
+            "X-Patch-Expected-Behavior": PATCH_EXPECTED_BEHAVIOR,
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
