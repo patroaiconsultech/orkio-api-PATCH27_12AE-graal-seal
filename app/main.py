@@ -9722,6 +9722,79 @@ def _should_skip_assistant_persist(answer: str, execution_result: Optional[Dict[
 
     return False
 
+
+def _last_assistant_text_from_history(history: Optional[List[Dict[str, str]]]) -> str:
+    for item in reversed(history or []):
+        if str(item.get("role") or "").strip() == "assistant":
+            return str(item.get("content") or "").strip()
+    return ""
+
+
+def _is_followup_continue_request(user_message: str) -> bool:
+    raw = (user_message or "").strip()
+    if not raw:
+        return False
+    norm = re.sub(r"\s+", " ", raw.lower()).strip()
+    followup_patterns = [
+        r"^@?[a-z0-9_\-]*\s*continue\b",
+        r"^@?[a-z0-9_\-]*\s*continue\.?",
+        r"^@?[a-z0-9_\-]*\s*agora\s+continue\b",
+        r"^@?[a-z0-9_\-]*\s*continue\s+agora\b",
+        r"^@?[a-z0-9_\-]*\s*continue\s+em\s+",
+        r"^@?[a-z0-9_\-]*\s*continue\.\s+agora\s+",
+        r"^@?[a-z0-9_\-]*\s*continue[,\.]?\s+responda\b",
+        r"^@?[a-z0-9_\-]*\s*continue[,\.]?\s+agora\s+responda\b",
+        r"^@?[a-z0-9_\-]*\s*continue[,\.]?\s+em\s+\d+\s+frases?\b",
+        r"^@?[a-z0-9_\-]*\s*continue[,\.]?\s+em\s+uma\s+frase\b",
+        r"^@?[a-z0-9_\-]*\s*continue[,\.]?\s+em\s+duas\s+frases\b",
+        r"^@?[a-z0-9_\-]*\s*prossiga\b",
+        r"^@?[a-z0-9_\-]*\s*continue\s+da[ií]\b",
+    ]
+    if len(norm) > 220:
+        return False
+    return any(re.search(pat, norm, flags=re.IGNORECASE) for pat in followup_patterns)
+
+
+def _build_followup_continuation_prompt(
+    user_message: str,
+    history: Optional[List[Dict[str, str]]],
+    agent_name: Optional[str] = None,
+) -> str:
+    previous_answer = _last_assistant_text_from_history(history)
+    raw_user = (user_message or "").strip()
+    if not previous_answer:
+        return raw_user
+    agent_label = (agent_name or "o mesmo agente").strip()
+    return (
+        f"Você é {agent_label}. O usuário pediu uma continuação da sua última resposta. "
+        "Continue a partir do conteúdo anterior, mantendo o mesmo idioma, o mesmo assunto e a mesma identidade do agente. "
+        "Não recuse sem motivo real de segurança. Não diga que não pode ajudar se o pedido for apenas continuação, síntese, ajuste de tamanho ou reformulação.\n\n"
+        f"Última resposta do assistant:\n{previous_answer}\n\n"
+        f"Pedido atual do usuário:\n{raw_user}"
+    )
+
+
+def _looks_like_generic_safe_refusal(answer: str) -> bool:
+    txt = re.sub(r"\s+", " ", str(answer or "").strip().lower())
+    if not txt:
+        return False
+    refusal_markers = [
+        "desculpe, não posso ajudar com isso",
+        "desculpe, nao posso ajudar com isso",
+        "não posso ajudar com isso",
+        "nao posso ajudar com isso",
+        "não posso ajudar",
+        "nao posso ajudar",
+        "não posso atender",
+        "i can't help with that",
+        "i cannot help with that",
+        "sorry, i can't help with that",
+        "sorry, i cannot help with that",
+        "i’m sorry, but i can’t help with that",
+        "i am sorry, but i can't help with that",
+    ]
+    return any(marker in txt for marker in refusal_markers)
+
 def _pick_runtime_primary_agent(target_agents: List[Any], requested_names: Optional[List[str]] = None) -> Optional[Any]:
     if not target_agents:
         return None
@@ -13609,6 +13682,7 @@ async def chat_stream(
     _stream_final_agent_name = None
     _stream_final_voice_id = None
     _stream_final_avatar_url = None
+    _stream_done_debug: Dict[str, Any] = {}
 
     def _stream_elapsed_ms(started_monotonic: Optional[float] = None) -> int:
         base_started = started_monotonic if started_monotonic is not None else _stream_started_monotonic
@@ -13808,6 +13882,77 @@ async def chat_stream(
                 # Stable streaming history: never depend on ORM Message instances after commit/rollback
                 history_dicts = list(stream_history_seed[-24:])
 
+                followup_continuation_applied = False
+                user_msg_for_provider = user_msg
+                if blocked_reply is None and _is_followup_continue_request(message):
+                    _continuation_prompt = _build_followup_continuation_prompt(
+                        message,
+                        history_dicts,
+                        final_signer_agent_name,
+                    )
+                    if _continuation_prompt and _continuation_prompt != user_msg:
+                        user_msg_for_provider = _continuation_prompt
+                        followup_continuation_applied = True
+
+                planner_snapshot_live = runtime_enrichment.get("planner_snapshot") if isinstance(runtime_enrichment, dict) else {}
+                dag_snapshot_live = runtime_enrichment.get("dag_snapshot") if isinstance(runtime_enrichment, dict) else {}
+                selected_agent_name = ag_name
+                runtime_primary_agent_name = _agent_attr(runtime_primary_agent, "name", None)
+                preferred_visible_node = None
+                visible_node = None
+                execution_depth = None
+                if isinstance(planner_snapshot_live, dict):
+                    preferred_visible_node = planner_snapshot_live.get("preferred_visible_node") or planner_snapshot_live.get("visible_only_agent")
+                    execution_depth = execution_depth or planner_snapshot_live.get("execution_depth")
+                if isinstance(dag_snapshot_live, dict):
+                    preferred_visible_node = preferred_visible_node or dag_snapshot_live.get("preferred_visible_node")
+                    visible_node = dag_snapshot_live.get("visible_node")
+                    execution_depth = execution_depth or dag_snapshot_live.get("execution_depth")
+                if visible_node in (None, ""):
+                    visible_node = final_signer_agent_name
+                route_debug_payload = {
+                    "selected_agent_id": ag_id,
+                    "selected_agent_name": selected_agent_name,
+                    "runtime_primary_agent_id": _agent_attr(runtime_primary_agent, "id", None),
+                    "runtime_primary_agent_name": runtime_primary_agent_name,
+                    "preferred_visible_node": preferred_visible_node,
+                    "visible_node": visible_node,
+                    "final_signer_agent_id": final_signer_agent_id,
+                    "final_signer_agent_name": final_signer_agent_name,
+                    "execution_depth": execution_depth,
+                    "should_execute_runtime": bool(should_execute_runtime),
+                    "followup_continuation_applied": followup_continuation_applied,
+                    "requested_names": list(requested_names or []),
+                }
+                try:
+                    logger.info(
+                        "CHAT_STREAM_RUNTIME_ROUTE trace_id=%s thread_id=%s selected_agent=%s runtime_primary_agent=%s visible_node=%s final_signer=%s execution_depth=%s followup=%s",
+                        trace_id,
+                        tid,
+                        selected_agent_name,
+                        runtime_primary_agent_name,
+                        visible_node,
+                        final_signer_agent_name,
+                        execution_depth,
+                        followup_continuation_applied,
+                    )
+                except Exception:
+                    pass
+                try:
+                    yield sse_execution(
+                        "runtime_route_debug",
+                        "Diagnóstico de roteamento consolidado",
+                        kind="system",
+                        scope="agent",
+                        agent_id=final_signer_agent_id,
+                        agent_name=final_signer_agent_name,
+                        started_monotonic=agent_started_monotonic,
+                        detail="Seleção, signer visível e profundidade de execução resolvidos para este turno.",
+                        **route_debug_payload,
+                    )
+                except Exception:
+                    return
+
                 execution_result = None
                 capability_inventory_answer = None
                 # PATCH27_12AK — should_execute_runtime decidido antes do loop
@@ -13951,7 +14096,7 @@ async def chat_stream(
                     llm_task = asyncio.create_task(
                         asyncio.to_thread(
                             _openai_answer,
-                            user_msg if blocked_reply is None else blocked_reply,
+                            user_msg_for_provider if blocked_reply is None else blocked_reply,
                             citations,
                             history_dicts,
                             system_prompt,
@@ -14011,6 +14156,46 @@ async def chat_stream(
                     ans_obj = {"text": _build_execution_result_payload(execution_result), "usage": None, "model": "github_capability"}
                 else:
                     ans_obj = {"text": blocked_reply, "usage": None, "model": "summit_guard"} if blocked_reply is not None else await llm_task
+
+                provider_refusal_detected = False
+                refusal_retry_applied = False
+                if blocked_reply is None and capability_inventory_answer is None and not (execution_result and execution_result.get("handled")):
+                    _ans_text_raw = (ans_obj.get("text") or "").strip() if isinstance(ans_obj, dict) else ""
+                    if _looks_like_generic_safe_refusal(_ans_text_raw):
+                        provider_refusal_detected = True
+                        _repair_prompt = _build_followup_continuation_prompt(message, history_dicts, final_signer_agent_name)
+                        if _repair_prompt and _repair_prompt != user_msg_for_provider:
+                            try:
+                                yield sse_execution(
+                                    "provider_refusal_retry",
+                                    "Provider retornou recusa genérica; aplicando retry contextual",
+                                    kind="warning",
+                                    scope="agent",
+                                    agent_id=final_signer_agent_id,
+                                    agent_name=final_signer_agent_name,
+                                    started_monotonic=agent_started_monotonic,
+                                    detail="Um segundo turno contextual será tentado para preservar continuidade segura da conversa.",
+                                )
+                            except Exception:
+                                return
+                            try:
+                                _retry_temperature = temperature if isinstance(temperature, (int, float)) else 0.2
+                            except Exception:
+                                _retry_temperature = 0.2
+                            retry_ans_obj = await asyncio.to_thread(
+                                _openai_answer,
+                                _repair_prompt,
+                                citations,
+                                history_dicts,
+                                system_prompt,
+                                model_override,
+                                min(float(_retry_temperature or 0.2), 0.2),
+                            )
+                            if isinstance(retry_ans_obj, dict):
+                                _retry_text = (retry_ans_obj.get("text") or "").strip()
+                                if _retry_text and not _looks_like_generic_safe_refusal(_retry_text):
+                                    ans_obj = retry_ans_obj
+                                    refusal_retry_applied = True
                 if await request.is_disconnected():
                     return
 
@@ -14084,6 +14269,59 @@ async def chat_stream(
                     except Exception:
                         return
                     continue
+
+                answer_source = (
+                    "capability_inventory"
+                    if capability_inventory_answer is not None
+                    else "runtime_execution"
+                    if execution_result and execution_result.get("handled")
+                    else "policy_guard"
+                    if blocked_reply is not None
+                    else "provider"
+                )
+                _assistant_answer_debug = {
+                    "answer_source": answer_source,
+                    "followup_continuation_applied": followup_continuation_applied,
+                    "provider_refusal_detected": provider_refusal_detected,
+                    "refusal_retry_applied": refusal_retry_applied,
+                    "selected_agent_id": ag_id,
+                    "selected_agent_name": ag_name,
+                    "runtime_primary_agent_id": _agent_attr(runtime_primary_agent, "id", None),
+                    "runtime_primary_agent_name": _agent_attr(runtime_primary_agent, "name", None),
+                    "final_signer_agent_id": final_signer_agent_id,
+                    "final_signer_agent_name": final_signer_agent_name,
+                    "execution_depth": route_debug_payload.get("execution_depth"),
+                    "preferred_visible_node": route_debug_payload.get("preferred_visible_node"),
+                    "visible_node": route_debug_payload.get("visible_node"),
+                }
+                try:
+                    logger.info(
+                        "CHAT_STREAM_ANSWER_DIAGNOSTICS trace_id=%s thread_id=%s answer_source=%s provider_refusal_detected=%s refusal_retry_applied=%s selected_agent=%s final_signer=%s execution_depth=%s",
+                        trace_id,
+                        tid,
+                        answer_source,
+                        provider_refusal_detected,
+                        refusal_retry_applied,
+                        ag_name,
+                        final_signer_agent_name,
+                        route_debug_payload.get("execution_depth"),
+                    )
+                except Exception:
+                    pass
+                try:
+                    yield sse_execution(
+                        "assistant_answer_diagnostics",
+                        "Diagnóstico da resposta consolidado",
+                        kind="system",
+                        scope="agent",
+                        agent_id=final_signer_agent_id,
+                        agent_name=final_signer_agent_name,
+                        started_monotonic=agent_started_monotonic,
+                        detail="Fonte da resposta e retries de continuidade resolvidos para este turno.",
+                        **_assistant_answer_debug,
+                    )
+                except Exception:
+                    return
 
                 ans = _apply_truthful_execution_mode((ans_obj.get("text") or "").strip(), execution_result=execution_result)
                 ans = _apply_chat_anti_echo(ans, message)
@@ -14300,6 +14538,8 @@ async def chat_stream(
                 _stream_final_agent_name = final_signer_agent_name
                 _stream_final_voice_id = final_signer_voice_id
                 _stream_final_avatar_url = final_signer_avatar_url
+                _stream_done_debug = dict(route_debug_payload)
+                _stream_done_debug.update(_assistant_answer_debug)
 
             final_runtime_enrichment = runtime_enrichment if isinstance(runtime_enrichment, dict) else {}
             try:
@@ -14355,6 +14595,8 @@ async def chat_stream(
                     "voice_id": _stream_final_voice_id,
                     "avatar_url": _stream_final_avatar_url,
                 }
+                if _stream_done_debug:
+                    payload["diagnostics"] = dict(_stream_done_debug)
                 if final_runtime_enrichment and final_runtime_enrichment.get("runtime_hints"):
                     payload["runtime_hints"] = final_runtime_enrichment.get("runtime_hints")
                 yield sse_execution(
