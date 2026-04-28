@@ -281,6 +281,11 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "execution_depth": "dispatch" if wants_execution else "ready",
             "visible_only_agent": visible_only_agent,
             "response_profile": "orion_objective_diagnostic" if direct_orion_diagnostic else "platform_audit",
+            "delivery_contract": "orion_structured_dispatch_v1" if wants_execution else "orion_audit_ready_v1",
+            "structured_output": bool(wants_execution),
+            "dispatch_receipts_expected": bool(wants_execution),
+            "specialist_reports_expected": bool(wants_execution),
+            "final_consolidation_expected": bool(wants_execution),
         }
 
     if _contains_any(txt, _RUNTIME_SCAN_TERMS):
@@ -421,6 +426,8 @@ def build_intent_package(
         "requires_runtime_execution": bool(runtime_op.get("kind")),
         "target_agent": runtime_op.get("target_agent") or "orkio",
         "requires_capability": runtime_op.get("requires_capability") or "",
+        "delivery_contract": runtime_op.get("delivery_contract") or "",
+        "structured_output": bool(runtime_op.get("structured_output")),
         "context_summary": context.get("summary"),
         "first_win_goal": first_win_goal,
         "followup_mode": (
