@@ -35,6 +35,12 @@ CAPABILITY_EXECUTION_BINDINGS = {
         "allowed_agents": ["orion"],
         "write": True,
     },
+    "github_pr_compare_status": {
+        "executor": "orion_internal.github_execute",
+        "mode": "runtime",
+        "allowed_agents": ["orkio", "orion", "chris", "auditor"],
+        "write": False,
+    },
     "github_pr_prepare": {
         "executor": "orion_internal.github_execute",
         "mode": "runtime",
