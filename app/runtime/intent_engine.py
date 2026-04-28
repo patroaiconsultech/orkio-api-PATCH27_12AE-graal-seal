@@ -88,13 +88,15 @@ def _infer_sticky_dispatch_followup_subtype(text: str) -> str:
 # GitHub Runtime Detection
 # =========================
 
-PATCH_SENTINEL_EXPECTED = "PREMIUM_AUDIT_RENDERER_SENTINEL_12BG_V1"
-PATCH_FEATURE_EXPECTED = "premium_audit_final_renderer"
-PATCH_EXPECTED_BEHAVIOR = "premium_audit_full_A_to_J_renderer_and_preserved_payload_fields"
+PATCH_SENTINEL_EXPECTED = "FRONTEND_REPO_EMISSION_SENTINEL_12BI_V1"
+PATCH_FEATURE_EXPECTED = "frontend_repo_target_hard_binding_and_proposal_file_emission"
+PATCH_EXPECTED_BEHAVIOR = "frontend_repo_hard_binding_and_proposal_patch_file_emission"
 
 _GITHUB_RUNTIME_TERMS = [
     "github",
     "repo",
+    "frontend",
+    "backend",
     "repositório",
     "repositorio",
     "branch",
@@ -126,6 +128,8 @@ _GITHUB_WRITE_TERMS = [
     "patch",
     "pull request",
     "pr ",
+    "empty state premium",
+    "appconsole",
 ]
 
 _GITHUB_READ_TERMS = [
@@ -389,6 +393,62 @@ _PATCH_PLAN_TERMS = [
     "plano seguro",
 ]
 
+_SELF_EVOLUTION_TERMS = [
+    "autoevolução controlada",
+    "autoevolução controlada",
+    "auto evolucao controlada",
+    "autoevolucao controlada",
+    "self evolution",
+    "self-evolution",
+    "ciclo de autoevolução",
+    "ciclo de autoevolucao",
+    "evolução controlada",
+    "evolucao controlada",
+]
+
+_SELF_EVOLUTION_SCOPE_TERMS = [
+    "propose_only",
+    "modo propose_only",
+    "somente proposta",
+    "apenas proposta",
+    "sem pr",
+    "sem pull request",
+    "sem merge",
+    "sem deploy",
+    "não abrir pr",
+    "nao abrir pr",
+    "não fazer merge",
+    "nao fazer merge",
+    "não fazer deploy",
+    "nao fazer deploy",
+    "não escrever em main",
+    "nao escrever em main",
+]
+
+_SELF_EVOLUTION_SOURCE_TERMS = [
+    "última auditoria premium",
+    "ultima auditoria premium",
+    "last premium audit",
+    "auditoria premium",
+    "backlog priorizado",
+    "selecionar a melhoria",
+    "melhoria de maior impacto",
+    "menor risco",
+]
+
+def _is_controlled_self_evolution_propose_request(text: str) -> bool:
+    txt = _normalize(text)
+    if not txt:
+        return False
+    return (
+        _contains_any(txt, _SELF_EVOLUTION_TERMS)
+        and (
+            _contains_any(txt, _SELF_EVOLUTION_SCOPE_TERMS)
+            or _contains_any(txt, _SELF_EVOLUTION_SOURCE_TERMS)
+        )
+    )
+
+
 
 def _detect_runtime_operation(text: str) -> Dict[str, Any]:
     txt = _normalize(text)
@@ -408,6 +468,39 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "mode": "execute",
             "requires_capability": "agents_registry_read",
             "data_source": "agents_api",
+        }
+
+    if _is_controlled_self_evolution_propose_request(txt):
+        return {
+            "kind": "controlled_self_evolution_propose_only",
+            "target_agent": "orion",
+            "mode": "execute",
+            "evolution_mode": "propose_only",
+            "prepare_only": False,
+            "execution_depth": "dispatch",
+            "visible_only_agent": "orion",
+            "response_profile": "controlled_self_evolution_propose_only",
+            "delivery_contract": "controlled_self_evolution_propose_only_v1",
+            "render_strategy": "controlled_self_evolution_A_to_J_full",
+            "response_body_mode": "controlled_self_evolution_propose_only",
+            "structured_output": True,
+            "dispatch_receipts_expected": True,
+            "specialist_reports_expected": True,
+            "final_consolidation_expected": True,
+            "auditability_expected": True,
+            "execution_audit_expected": True,
+            "persist_execution_audit": True,
+            "specialist_fanout_required": True,
+            "hard_block_github_write": True,
+            "read_only_enforced": True,
+            "github_write_blocked": True,
+            "approval_required_for_pr": True,
+            "requested_specialists": ["auditor", "cto", "orion", "chris", "architect", "devops", "security", "memory_ops", "stage_manager"],
+            "planner_sections_required": ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"],
+            "source_preference": "latest_premium_audit",
+            "patch_sentinel_expected": PATCH_SENTINEL_EXPECTED,
+            "patch_feature_expected": PATCH_FEATURE_EXPECTED,
+            "patch_expected_behavior": PATCH_EXPECTED_BEHAVIOR,
         }
 
     if premium_audit:
