@@ -1232,9 +1232,9 @@ def _is_production_env() -> bool:
     return _app_env() == "production"
 
 APP_VERSION = "2.4.0"
-PATCH_SENTINEL = "FRONTEND_REPO_EMISSION_SENTINEL_12BI_V1"
-PATCH_FEATURE = "frontend_repo_target_hard_binding_and_proposal_file_emission"
-PATCH_EXPECTED_BEHAVIOR = "frontend_repo_hard_binding_and_proposal_patch_file_emission"
+PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BK_V1"
+PATCH_FEATURE = "github_pr_compare_status_resolver"
+PATCH_EXPECTED_BEHAVIOR = "github_compare_and_pr_status_requests_resolve_without_inventory_fallback"
 RAG_MODE = "keyword"
 
 def patch_id() -> str:
