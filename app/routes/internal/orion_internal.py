@@ -14,9 +14,9 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/internal/orion", tags=["orion_internal"])
 
-PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BM_V1"
+PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BN_V3"
 PATCH_FEATURE = "github_pr_compare_status_resolver"
-PATCH_EXPECTED_BEHAVIOR = "github_compare_and_pr_status_requests_resolve_without_inventory_fallback_and_repo_aliases"
+PATCH_EXPECTED_BEHAVIOR = "github_compare_and_pr_status_requests_resolve_with_repo_aliases_natural_compare_and_structured_not_found"
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -338,13 +338,19 @@ def _resolve_repo_target_from_message(message: str) -> str:
     return _normalize_repo_target(explicit, backend, frontend, message)
 
 
+
+
 def _extract_branch_names_from_message(message: str) -> tuple[str, str]:
     txt = (message or "").strip()
     default_branch = _default_branch()
     head = ""
     base = ""
     patterns = [
-        r"branch\s+([A-Za-z0-9_./-]+)\s+com\s+a\s+branch\s+([A-Za-z0-9_./-]+)",
+        r"compare\s+(?:a\s+)?branch\s+([A-Za-z0-9_./-]+)\s+com\s+a\s+(?:branch\s+)?([A-Za-z0-9_./-]+)",
+        r"compare\s+(?:a\s+)?branch\s+([A-Za-z0-9_./-]+)\s+(?:contra|com|versus|vs)\s+(?:a\s+)?(?:branch\s+)?([A-Za-z0-9_./-]+)",
+        r"comparar\s+(?:a\s+)?branch\s+([A-Za-z0-9_./-]+)\s+(?:contra|com|versus|vs)\s+(?:a\s+)?(?:branch\s+)?([A-Za-z0-9_./-]+)",
+        r"compare\s+(?:da|do|de)\s+([A-Za-z0-9_./-]+).*?(?:contra|com|versus|vs)\s+([A-Za-z0-9_./-]+)",
+        r"comparar\s+(?:da|do|de)\s+([A-Za-z0-9_./-]+).*?(?:contra|com|versus|vs)\s+([A-Za-z0-9_./-]+)",
         r"branch\s+([A-Za-z0-9_./-]+)\s+to\s+([A-Za-z0-9_./-]+)",
         r"da\s+branch\s+([A-Za-z0-9_./-]+)\s+para\s+([A-Za-z0-9_./-]+)",
         r"head\s*[:=]\s*([A-Za-z0-9_./-]+).*?base\s*[:=]\s*([A-Za-z0-9_./-]+)",
@@ -355,20 +361,37 @@ def _extract_branch_names_from_message(message: str) -> tuple[str, str]:
             head = str(m.group(1) or "").strip()
             base = str(m.group(2) or "").strip()
             break
+
     if not head:
         m = re.search(r"branch\s+([A-Za-z0-9_./-]+)", txt, flags=re.IGNORECASE)
         if m:
             head = str(m.group(1) or "").strip()
+
+    if not head and (("compare" in txt.lower()) or ("comparar" in txt.lower())):
+        slug_match = re.search(
+            r"\b((?:feat|fix|hotfix|chore|docs|refactor|test|tests|build|ci|perf|release)/[A-Za-z0-9_./-]+)\b",
+            txt,
+            flags=re.IGNORECASE,
+        )
+        if slug_match:
+            head = str(slug_match.group(1) or "").strip()
+
+    if not base:
+        m = re.search(r"(?:contra|com|versus|vs)\s+(?:a\s+)?(?:branch\s+)?([A-Za-z0-9_./-]+)", txt, flags=re.IGNORECASE)
+        if m:
+            base = str(m.group(1) or "").strip()
+
     if not base:
         m = re.search(r"base(?:_branch)?\s*[:=]?\s*([A-Za-z0-9_./-]+)", txt, flags=re.IGNORECASE)
         if m:
             base = str(m.group(1) or "").strip()
-    if not base:
-        m = re.search(r"\bmain\b|\bmaster\b|\bproduction\b|\bprod\b", txt, flags=re.IGNORECASE)
-        if m:
-            base = str(m.group(0) or "").strip()
-    return head, (base or default_branch)
 
+    if not base:
+        m = re.search(r"\b(main|master|production|prod|develop|dev)\b", txt, flags=re.IGNORECASE)
+        if m:
+            base = str(m.group(1) or "").strip()
+
+    return head, (base or default_branch)
 
 def _extract_pr_number_from_message(message: str) -> int:
     txt = (message or "").strip()
@@ -482,10 +505,10 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
             merge_executed = bool(pr_payload.get("merged"))
         else:
             return {
-                "ok": False,
+                "ok": True,
                 "service": "orion_internal",
                 "mode": "github_compare_status",
-                "event": "GITHUB_COMPARE_STATUS_FAILED",
+                "event": "GITHUB_COMPARE_STATUS_NOT_FOUND",
                 "provider": "github",
                 "visible_agent": visible_agent,
                 "repo": repo_target,
@@ -493,17 +516,25 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
                 "backend_repo": _github_repo(),
                 "frontend_repo": _github_repo_web(),
                 "repository_details": repository_details,
+                "branch": head,
+                "branch_name": head,
+                "base_branch": base or default_branch,
+                "compare_ok": False,
+                "merge_executed": False,
+                "deploy_executed": False,
                 "pr_number": int(pr_number or 0),
-                "message": str(pr_lookup.get("message") or "pull_request_not_found"),
+                "pr_found": False,
+                "message": "pull_request_not_found",
+                "github_error": str(pr_lookup.get("message") or "pull_request_not_found"),
                 "generated_at": _now_ts(),
             }
 
     if not head:
         return {
-            "ok": False,
+            "ok": True,
             "service": "orion_internal",
             "mode": "github_compare_status",
-            "event": "GITHUB_COMPARE_STATUS_FAILED",
+            "event": "GITHUB_COMPARE_STATUS_INPUT_INVALID",
             "provider": "github",
             "visible_agent": visible_agent,
             "repo": repo_target,
@@ -512,7 +543,11 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
             "frontend_repo": _github_repo_web(),
             "repository_details": repository_details,
             "pr_number": int(pr_number or 0),
+            "compare_ok": False,
+            "merge_executed": False,
+            "deploy_executed": False,
             "message": "head_branch_not_detected",
+            "expected_input": "compare <head_branch> contra <base_branch> no repo <owner/repo>",
             "generated_at": _now_ts(),
         }
 
@@ -823,7 +858,11 @@ def _extract_branch_names_from_message(message: str) -> tuple[str, str]:
     head = ""
     base = ""
     patterns = [
-        r"branch\s+([A-Za-z0-9_./-]+)\s+com\s+a\s+branch\s+([A-Za-z0-9_./-]+)",
+        r"compare\s+(?:a\s+)?branch\s+([A-Za-z0-9_./-]+)\s+com\s+a\s+(?:branch\s+)?([A-Za-z0-9_./-]+)",
+        r"compare\s+(?:a\s+)?branch\s+([A-Za-z0-9_./-]+)\s+(?:contra|com|versus|vs)\s+(?:a\s+)?(?:branch\s+)?([A-Za-z0-9_./-]+)",
+        r"comparar\s+(?:a\s+)?branch\s+([A-Za-z0-9_./-]+)\s+(?:contra|com|versus|vs)\s+(?:a\s+)?(?:branch\s+)?([A-Za-z0-9_./-]+)",
+        r"compare\s+(?:da|do|de)\s+([A-Za-z0-9_./-]+).*?(?:contra|com|versus|vs)\s+([A-Za-z0-9_./-]+)",
+        r"comparar\s+(?:da|do|de)\s+([A-Za-z0-9_./-]+).*?(?:contra|com|versus|vs)\s+([A-Za-z0-9_./-]+)",
         r"branch\s+([A-Za-z0-9_./-]+)\s+to\s+([A-Za-z0-9_./-]+)",
         r"da\s+branch\s+([A-Za-z0-9_./-]+)\s+para\s+([A-Za-z0-9_./-]+)",
         r"head\s*[:=]\s*([A-Za-z0-9_./-]+).*?base\s*[:=]\s*([A-Za-z0-9_./-]+)",
@@ -834,20 +873,37 @@ def _extract_branch_names_from_message(message: str) -> tuple[str, str]:
             head = str(m.group(1) or "").strip()
             base = str(m.group(2) or "").strip()
             break
+
     if not head:
         m = re.search(r"branch\s+([A-Za-z0-9_./-]+)", txt, flags=re.IGNORECASE)
         if m:
             head = str(m.group(1) or "").strip()
+
+    if not head and (("compare" in txt.lower()) or ("comparar" in txt.lower())):
+        slug_match = re.search(
+            r"\b((?:feat|fix|hotfix|chore|docs|refactor|test|tests|build|ci|perf|release)/[A-Za-z0-9_./-]+)\b",
+            txt,
+            flags=re.IGNORECASE,
+        )
+        if slug_match:
+            head = str(slug_match.group(1) or "").strip()
+
+    if not base:
+        m = re.search(r"(?:contra|com|versus|vs)\s+(?:a\s+)?(?:branch\s+)?([A-Za-z0-9_./-]+)", txt, flags=re.IGNORECASE)
+        if m:
+            base = str(m.group(1) or "").strip()
+
     if not base:
         m = re.search(r"base(?:_branch)?\s*[:=]?\s*([A-Za-z0-9_./-]+)", txt, flags=re.IGNORECASE)
         if m:
             base = str(m.group(1) or "").strip()
-    if not base:
-        m = re.search(r"\bmain\b|\bmaster\b|\bproduction\b|\bprod\b", txt, flags=re.IGNORECASE)
-        if m:
-            base = str(m.group(0) or "").strip()
-    return head, (base or default_branch)
 
+    if not base:
+        m = re.search(r"\b(main|master|production|prod|develop|dev)\b", txt, flags=re.IGNORECASE)
+        if m:
+            base = str(m.group(1) or "").strip()
+
+    return head, (base or default_branch)
 
 def _extract_pr_number_from_message(message: str) -> int:
     txt = (message or "").strip()
