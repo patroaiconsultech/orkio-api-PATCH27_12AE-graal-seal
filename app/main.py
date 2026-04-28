@@ -5636,6 +5636,7 @@ def _build_runtime_capabilities_payload(db: Optional[Session] = None, org: Optio
     github_write_runtime_enabled = github_available and _github_write_runtime_enabled()
     github_allow_main = github_write_runtime_enabled and _github_write_allow_main_with_approval()
     github_default_mode = _github_write_default_mode()
+    github_requires_explicit_pr_approval = github_available and _github_require_explicit_pr_approval()
     github_mode = "governed_write_control" if github_write_runtime_enabled else ("governed_pr_only" if github_available else "unavailable")
 
     available_ops: List[str] = []
@@ -5668,7 +5669,7 @@ def _build_runtime_capabilities_payload(db: Optional[Session] = None, org: Optio
             "read_enabled": github_available,
             "write_enabled": github_write_runtime_enabled,
             "propose_patch_enabled": github_available,
-            "approval_required": github_available,
+            "approval_required": github_requires_explicit_pr_approval,
             "default_mode": github_default_mode,
             "main_write_allowed_with_explicit_approval": github_allow_main,
             "repositories": repo_labels,
@@ -5767,6 +5768,9 @@ def _github_write_runtime_enabled() -> bool:
 
 def _github_write_allow_main_with_approval() -> bool:
     return _env_flag("GITHUB_WRITE_ALLOW_MAIN_WITH_APPROVAL", False)
+
+def _github_require_explicit_pr_approval() -> bool:
+    return _env_flag("REQUIRE_EXPLICIT_PR_APPROVAL", True)
 
 def _payload_can_govern_github_writes(payload: Optional[Dict[str, Any]]) -> bool:
     return _payload_has_catalog_privileged_access(payload)
@@ -5894,23 +5898,25 @@ def _github_write_authorization_flags(user_text: str) -> Dict[str, Any]:
     flags["deny_merge"] = bool(re.search(r"(n[ãa]o\s+autorizo\s+merge)", low, flags=re.IGNORECASE))
 
     m_authorize = re.search(r"\bautorizo\b", low, flags=re.IGNORECASE)
-    auth_window = low[m_authorize.start():m_authorize.start() + 400] if m_authorize else low
+    m_confirm = re.search(r"\b(confirmo|aprov[oa])\b", low, flags=re.IGNORECASE)
+    auth_anchor = m_authorize or m_confirm
+    auth_window = low[auth_anchor.start():auth_anchor.start() + 400] if auth_anchor else low
 
     flags["allow_branch"] = bool(
-        re.search(r"(autorizo\s+criar\s+branch|autorizo\s+branch)", low, flags=re.IGNORECASE)
-        or (m_authorize and re.search(r"\bbranch\b", auth_window, flags=re.IGNORECASE))
+        re.search(r"(autorizo\s+criar\s+branch|autorizo\s+branch|confirmo\s+criar\s+branch|aprovo\s+criar\s+branch)", low, flags=re.IGNORECASE)
+        or (auth_anchor and re.search(r"\bbranch\b", auth_window, flags=re.IGNORECASE))
     )
     flags["allow_patch"] = bool(
         re.search(r"(autorizo\s+aplicar\s+patch|autorizo\s+patch)", low, flags=re.IGNORECASE)
-        or (m_authorize and re.search(r"\b(patch|arquivo|file)\b", auth_window, flags=re.IGNORECASE))
+        or (auth_anchor and re.search(r"\b(patch|arquivo|file)\b", auth_window, flags=re.IGNORECASE))
     )
     flags["allow_commit"] = bool(
         re.search(r"(autorizo\s+preparar\s+commit|autorizo\s+commit\s+direto|autorizo\s+commit)", low, flags=re.IGNORECASE)
-        or (m_authorize and re.search(r"\bcommit\b", auth_window, flags=re.IGNORECASE))
+        or (auth_anchor and re.search(r"\bcommit\b", auth_window, flags=re.IGNORECASE))
     )
     flags["allow_pr"] = bool(
         re.search(r"(autorizo\s+abrir\s+pr|autorizo\s+pr)", low, flags=re.IGNORECASE)
-        or (m_authorize and (re.search(r"\bpr\b", auth_window, flags=re.IGNORECASE) or "pull request" in auth_window))
+        or (auth_anchor and (re.search(r"\bpr\b", auth_window, flags=re.IGNORECASE) or "pull request" in auth_window))
     )
     flags["allow_main"] = bool(
         re.search(
@@ -6130,6 +6136,8 @@ def _build_github_write_response_text(
             f"- allow_main: {bool(approval.get('allow_main'))}",
             f"- actions_allowed: {', '.join(list(approval.get('actions_allowed') or [])) or 'n/d'}",
             f"- expires_at: {approval.get('expires_at')}",
+            "- confirmation_source: chat",
+            "- merge_policy: não autorizado automaticamente",
         ]
         scope_files = list(approval.get("scope_files") or [])
         if scope_files:
@@ -6149,7 +6157,46 @@ def _build_github_write_response_text(
 
     approval = snapshot.get("active_approval") if isinstance(snapshot.get("active_approval"), dict) else {}
     if not approval:
-        return "SEM AUTORIZAÇÃO DE ESCRITA."
+        requested_actions = [name for name in (
+            "create_branch",
+            "apply_patch",
+            "prepare_commit",
+            "open_pr",
+            "write_main",
+        ) if bool(req_flags.get(name))]
+        requested_paths = list(req_flags.get("paths") or [])
+        confirmation_parts = []
+        if req_flags.get("create_branch"):
+            confirmation_parts.append("criar branch")
+        if req_flags.get("apply_patch"):
+            confirmation_parts.append("aplicar patch")
+        if req_flags.get("prepare_commit"):
+            confirmation_parts.append("preparar commit")
+        if req_flags.get("open_pr"):
+            confirmation_parts.append("abrir PR")
+        if req_flags.get("write_main"):
+            confirmation_parts.append("escrever na main")
+        confirmation_phrase = "Autorizo " + ", ".join(confirmation_parts) if confirmation_parts else "Autorizo abrir PR"
+        if not str(confirmation_phrase).lower().startswith("autorizo"):
+            confirmation_phrase = "Autorizo abrir PR"
+        confirmation_phrase += " nesta thread. Não autorizo merge."
+        lines = [
+            "CONSULTA PRÉVIA E APROVAÇÃO EXPLÍCITA OBRIGATÓRIAS.",
+            f"- mode: {snapshot.get('mode') or 'awaiting_human_approval'}",
+            f"- approval_required: {bool(snapshot.get('approval_required', True))}",
+            f"- requested_actions: {', '.join(requested_actions) if requested_actions else 'n/d'}",
+            f"- requested_target: {'main' if req_flags.get('write_main') else 'branch'}",
+            f"- backend_repo: {snapshot.get('repository_targets', {}).get('backend') or 'n/d'}",
+            f"- frontend_repo: {snapshot.get('repository_targets', {}).get('frontend') or 'n/d'}",
+        ]
+        if requested_paths:
+            lines.append(f"- requested_paths: {', '.join(requested_paths)}")
+        lines.extend([
+            "- next_step: responda por escrito no chat com a autorização explícita.",
+            f'- example_confirmation: "{confirmation_phrase}"',
+            "- merge_policy: merge continua bloqueado nesta aprovação.",
+        ])
+        return "\n".join(lines)
 
     if not bool(snapshot.get("write_enabled")):
         return "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: escrita_github_desabilitada"
@@ -7552,6 +7599,13 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     followup_mode = (result.get("followup_mode") or "").strip()
     followup_subtype = (result.get("followup_subtype") or "").strip()
     render_strategy = (result.get("render_strategy") or "").strip()
+    response_body_mode = (result.get("response_body_mode") or "").strip()
+    compact_dispatch_details = bool(result.get("compact_dispatch_details"))
+    executive_body_only = bool(
+        response_body_mode == "executive_replace"
+        or render_strategy in {"dispatch_executive_compact", "dispatch_executive_replace"}
+        or followup_subtype == "executive_format"
+    )
 
     pr_num = int(result.get("pull_request_number") or 0)
     pr_url = (result.get("pull_request_url") or "").strip()
@@ -7589,8 +7643,11 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     report_format = (result.get("report_format") or "").strip()
     delivery_contract = (result.get("delivery_contract") or "").strip()
     selected_specialists = result.get("selected_specialists") if isinstance(result.get("selected_specialists"), list) else None
+    selected_specialists_summary = (result.get("selected_specialists_summary") or "").strip()
     dispatch_receipts = result.get("dispatch_receipts") if isinstance(result.get("dispatch_receipts"), list) else None
+    dispatch_receipts_appendix = result.get("dispatch_receipts_appendix") if isinstance(result.get("dispatch_receipts_appendix"), list) else None
     specialist_reports = result.get("specialist_reports") if isinstance(result.get("specialist_reports"), list) else None
+    specialist_reports_appendix = result.get("specialist_reports_appendix") if isinstance(result.get("specialist_reports_appendix"), list) else None
     selected_specialists_count = result.get("selected_specialists_count")
     dispatch_receipts_count = result.get("dispatch_receipts_count")
     specialist_reports_count = result.get("specialist_reports_count")
@@ -7610,7 +7667,7 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     backend_root_entries = result.get("backend_root_entries") if isinstance(result.get("backend_root_entries"), list) else None
     frontend_root_entries = result.get("frontend_root_entries") if isinstance(result.get("frontend_root_entries"), list) else None
 
-    if render_strategy == "dispatch_executive_compact":
+    if executive_body_only:
         compact_parts = ["Diagnóstico executivo com confirmação operacional verificável."]
         if event:
             compact_parts.append(f"event: {event}")
@@ -7618,28 +7675,32 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
             compact_parts.append(f"provider: {provider}")
         if execution_depth:
             compact_parts.append(f"execution_depth: {execution_depth}")
-        if selected_specialists_count not in (None, ""):
+        if selected_specialists_summary:
+            compact_parts.append(f"selected_specialists: {selected_specialists_summary}")
+        elif selected_specialists_count not in (None, ""):
             compact_parts.append(f"selected_specialists_count: {selected_specialists_count}")
         elif selected_specialists:
             compact_parts.append(f"selected_specialists_count: {len(selected_specialists)}")
-        if dispatch_receipts_count not in (None, ""):
-            compact_parts.append(f"dispatch_receipts_count: {dispatch_receipts_count}")
-        if specialist_reports_count not in (None, ""):
-            compact_parts.append(f"specialist_reports_count: {specialist_reports_count}")
         if executive_diagnostic:
-            compact_parts.append("executive_diagnostic:")
+            compact_parts.append("diagnóstico executivo:")
             compact_parts.append(executive_diagnostic)
         if confirmed_evidence:
-            compact_parts.append("confirmed_evidence:")
+            compact_parts.append("evidências confirmadas:")
             compact_parts.append(confirmed_evidence)
+        elif dispatch_receipts_count not in (None, "") or specialist_reports_count not in (None, ""):
+            compact_parts.append("evidências confirmadas:")
+            compact_parts.append(
+                "Dispatch preservado com "
+                f"{dispatch_receipts_count or 0} receipt(s) e {specialist_reports_count or 0} relatório(s) especializado(s)."
+            )
         if main_risk:
-            compact_parts.append("main_risk:")
+            compact_parts.append("risco principal:")
             compact_parts.append(main_risk)
         if recommended_actions:
-            compact_parts.append("recommended_actions:")
-            compact_parts.extend(f"- {str(item)}" for item in recommended_actions[:8])
+            compact_parts.append("próximos passos:")
+            compact_parts.extend(f"- {str(item)}" for item in recommended_actions[:6])
         if final_consolidation:
-            compact_parts.append("final_consolidation:")
+            compact_parts.append("fechamento:")
             compact_parts.append(final_consolidation)
         return "\n".join([str(x).rstrip() for x in compact_parts if str(x).strip()])
 
@@ -7708,7 +7769,7 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
         parts.append(technical_summary)
 
     if report_format in {"dispatch_audit_v1", "dispatch_audit_v2", "orion_diagnostic_v1", "orion_diagnostic_prose_v2", "dispatch_executive_followup_v1", "dispatch_progressive_followup_v1"} or event == "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED" or event == "ORION_RUNTIME_DIAGNOSTIC_EXECUTED" or execution_depth == "dispatch":
-        suppress_dispatch_detail_blocks = render_strategy in {"dispatch_executive_compact", "dispatch_progressive_compact"}
+        suppress_dispatch_detail_blocks = compact_dispatch_details or executive_body_only or render_strategy in {"dispatch_executive_compact", "dispatch_executive_replace", "dispatch_progressive_compact"}
         if executive_diagnostic:
             parts.append("executive_diagnostic:")
             parts.append(executive_diagnostic)
@@ -10023,6 +10084,7 @@ def _build_dispatch_audit_envelope(
         "followup_mode": _trim_dispatch_text(execution_data.get("followup_mode"), limit=120),
         "followup_subtype": _trim_dispatch_text(execution_data.get("followup_subtype"), limit=120),
         "render_strategy": _trim_dispatch_text(execution_data.get("render_strategy"), limit=120),
+        "response_body_mode": _trim_dispatch_text(execution_data.get("response_body_mode"), limit=80),
         "execution_mode": _trim_dispatch_text(execution_data.get("execution_mode"), limit=80) or "read_only_dispatch",
         "founder_control_mode": _trim_dispatch_text(execution_data.get("founder_control_mode"), limit=120) or "human_controlled_runtime_only",
         "auditability_status": _trim_dispatch_text(execution_data.get("auditability_status"), limit=120) or "ready_for_persistence",
