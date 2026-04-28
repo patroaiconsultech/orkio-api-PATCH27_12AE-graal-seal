@@ -398,6 +398,10 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
                 "delivery_contract": "github_governed_write_v1",
                 "approval_required_expected": True,
                 "human_confirmation_required": True,
+                "transactional_flow_required": True,
+                "transactional_flow": "branch_commit_pr",
+                "receipt_required_steps": ["branch_created", "files_written", "commit_created", "compare_ok", "pull_request_opened"],
+                "human_approval_source": "chat",
             }
 
         if _contains_any(txt, _GITHUB_READ_TERMS):
