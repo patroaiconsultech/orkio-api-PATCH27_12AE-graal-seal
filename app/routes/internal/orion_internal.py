@@ -13,6 +13,10 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/internal/orion", tags=["orion_internal"])
 
+PATCH_SENTINEL = "FOUNDER_APPROVAL_RUNTIME_SENTINEL_12BE_V1"
+PATCH_FEATURE = "founder_approval_runtime_sentinel"
+PATCH_EXPECTED_BEHAVIOR = "startup_and_sse_expose_explicit_patch_identity"
+
 
 def _bool_env(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -144,6 +148,9 @@ def _safe_patch_policy() -> Dict[str, Any]:
         ],
         "pr_open_requires_branch_and_commit": True,
         "approval_grant_expands_transaction_prerequisites": True,
+        "patch_sentinel": PATCH_SENTINEL,
+        "patch_feature": PATCH_FEATURE,
+        "patch_expected_behavior": PATCH_EXPECTED_BEHAVIOR,
     }
 
 
