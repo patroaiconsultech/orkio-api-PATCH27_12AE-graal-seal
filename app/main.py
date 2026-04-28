@@ -10399,7 +10399,34 @@ def chat(
                     orion_self_knowledge_flags = _orion_self_knowledge_request_flags(inp.message)
                     orion_operational_maturity_flags = _orion_operational_maturity_request_flags(inp.message)
                     hidden_catalog_flags = _hidden_catalog_request_flags(inp.message)
-                    if orion_operational_maturity_flags.get("requested") and _canonical_runtime_agent_slug(final_signer_agent_name) == "orion":
+
+                    runtime_operation_for_dispatch = (
+                        ((runtime_enrichment or {}).get("intent_package") or {}).get("runtime_operation", {})
+                        if isinstance(((runtime_enrichment or {}).get("intent_package") or {}).get("runtime_operation", {}), dict)
+                        else {}
+                    )
+                    force_runtime_dispatch = bool(
+                        runtime_operation_for_dispatch.get("force_dispatch")
+                        or runtime_operation_for_dispatch.get("execution_depth") == "dispatch"
+                        or ((runtime_enrichment or {}).get("runtime_hints") or {}).get("force_runtime_dispatch")
+                    )
+
+                    # PATCH27_12AL:
+                    # quando houver dispatch forçado para Orion/equipe técnica interna,
+                    # não deixar o caminho de capability inventory sequestrar a resposta.
+                    # Primeiro tenta execução real; só cai para inventário se não houver resultado tratado.
+                    if force_runtime_dispatch and should_execute_runtime:
+                        execution_result = _execute_capability_if_authorized(
+                            inp.message,
+                            trace_id=getattr(inp, "trace_id", None),
+                            runtime_enrichment=runtime_enrichment,
+                        )
+                        if not (execution_result and execution_result.get("handled")):
+                            execution_result = None
+
+                    if execution_result and execution_result.get("handled"):
+                        capability_inventory_answer = None
+                    elif orion_operational_maturity_flags.get("requested") and _canonical_runtime_agent_slug(final_signer_agent_name) == "orion":
                         capability_inventory_answer = _build_runtime_operational_maturity_text(
                             db=db,
                             org=org,
@@ -10453,7 +10480,7 @@ def chat(
             ans_obj = {
                 "text": _build_execution_result_payload(execution_result),
                 "usage": None,
-                "model": "github_capability",
+                "model": "runtime_capability_execution" if str(execution_result.get("provider") or "").strip().lower() == "runtime" else "github_capability",
             }
         else:
             ans_obj = _openai_answer(
