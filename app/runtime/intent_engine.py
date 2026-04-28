@@ -461,6 +461,8 @@ def build_intent_package(
             runtime_op["persist_execution_audit"] = True
             runtime_op["followup_mode"] = runtime_op.get("followup_mode") or "progressive_dispatch_followup"
             runtime_op["followup_subtype"] = runtime_op.get("followup_subtype") or _infer_sticky_dispatch_followup_subtype(text) or "continuation"
+            if str(runtime_op.get("followup_subtype") or "").strip().lower() == "executive_format":
+                runtime_op["render_strategy_hint"] = "dispatch_executive_compact"
     intent = runtime_op.get("kind") or "general_guidance"
 
     recommended_agents = ["orkio"]
