@@ -6143,6 +6143,8 @@ def _github_write_request_flags(user_text: str) -> Dict[str, Any]:
     }
     if not txt:
         return requested
+    if _is_explicit_read_only_runtime_audit_message(txt):
+        return requested
 
     explicit_branch_command = _is_explicit_github_create_branch_command(txt)
     requested["create_file"] = bool(create_file_req) and not bool(update_file_req) and not bool(batch_req)
@@ -6166,6 +6168,20 @@ def _github_write_request_flags(user_text: str) -> Dict[str, Any]:
         requested["batch_commit"]
         or re.search(r"(prepare\s+o\s+commit|preparar\s+commit|commit\s+direto|prepare\s+commit)", low, flags=re.IGNORECASE)
     )
+
+    if _has_negated_write_phrase(low, "criar branch", "create branch", "abrir pr", "open pr", "pull request", "aplicar patch", "apply patch", "prepare commit", "preparar commit", "write file", "create file", "criar arquivo"):
+        if _has_negated_write_phrase(low, "criar branch", "create branch"):
+            requested["create_branch"] = False
+        if _has_negated_write_phrase(low, "abrir pr", "open pr", "pull request"):
+            requested["open_pr"] = False
+        if _has_negated_write_phrase(low, "aplicar patch", "apply patch", "criar arquivo", "create file", "write file"):
+            requested["create_file"] = False
+            requested["update_file"] = False
+            requested["apply_patch"] = False
+        if _has_negated_write_phrase(low, "prepare commit", "preparar commit"):
+            requested["prepare_commit"] = False
+            requested["batch_commit"] = False
+
     # Opening a pull request *to* main is not the same as writing directly on main.
     # The generic "na main"/"to main" detector must not hijack PR requests.
     requested["write_main"] = bool(
@@ -6213,8 +6229,74 @@ def _is_controlled_self_evolution_propose_request_message(
     return any(marker in txt for marker in evolution_markers) and any(marker in txt for marker in scope_markers)
 
 
+
+def _is_explicit_read_only_runtime_audit_message(user_text: str) -> bool:
+    txt = (user_text or "").strip().lower()
+    if not txt:
+        return False
+    audit_markers = (
+        "auditoria",
+        "auditoria técnica",
+        "auditoria tecnica",
+        "auditoria interna",
+        "diagnóstico",
+        "diagnostico",
+        "análise",
+        "analise",
+        "evidências confirmadas",
+        "evidencias confirmadas",
+        "risco residual",
+        "causa raiz",
+        "recomendação mínima",
+        "recomendacao minima",
+    )
+    read_only_markers = (
+        "somente leitura",
+        "read only",
+        "read-only",
+        "diagnóstico read-only",
+        "diagnostico read-only",
+        "não escrever",
+        "nao escrever",
+        "não criar branch",
+        "nao criar branch",
+        "não abrir pr",
+        "nao abrir pr",
+        "não aplicar patch",
+        "nao aplicar patch",
+        "não preparar commit",
+        "nao preparar commit",
+        "não reutilizar contexto sticky anterior",
+        "nao reutilizar contexto sticky anterior",
+        "não consultar pr anterior",
+        "nao consultar pr anterior",
+        "ignorar qualquer contexto anterior de pr",
+        "ignorando qualquer contexto anterior de pr",
+    )
+    return any(marker in txt for marker in audit_markers) and any(marker in txt for marker in read_only_markers)
+
+
+def _has_negated_write_phrase(low: str, *phrases: str) -> bool:
+    txt = str(low or "").strip().lower()
+    if not txt:
+        return False
+    for phrase in phrases:
+        p = str(phrase or "").strip().lower()
+        if not p:
+            continue
+        patterns = (
+            rf"\bn[ãa]o\s+{p}\b",
+            rf"\bsem\s+{p}\b",
+        )
+        if any(re.search(pattern, txt, flags=re.IGNORECASE) for pattern in patterns):
+            return True
+    return False
+
+
 def _is_github_write_request_or_authorization(user_text: str) -> bool:
     if _is_controlled_self_evolution_propose_request_message(user_text):
+        return False
+    if _is_explicit_read_only_runtime_audit_message(user_text):
         return False
     req = _github_write_request_flags(user_text)
     auth = _github_write_authorization_flags(user_text)
