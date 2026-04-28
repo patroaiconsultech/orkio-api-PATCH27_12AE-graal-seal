@@ -12,6 +12,12 @@ def _contains_any(text: str, terms: list[str]) -> bool:
     return any(_normalize(term) in txt for term in terms if term)
 
 
+
+
+def _contains_all(text: str, terms: list[str]) -> bool:
+    txt = _normalize(text)
+    return all(_normalize(term) in txt for term in terms if term)
+
 def _context_has_sticky_dispatch(context: Optional[Dict[str, Any]]) -> bool:
     ctx = context or {}
     if not isinstance(ctx, dict):
@@ -82,9 +88,9 @@ def _infer_sticky_dispatch_followup_subtype(text: str) -> str:
 # GitHub Runtime Detection
 # =========================
 
-PATCH_SENTINEL_EXPECTED = "FOUNDER_APPROVAL_RUNTIME_SENTINEL_12BE_V1"
-PATCH_FEATURE_EXPECTED = "founder_approval_runtime_sentinel"
-PATCH_EXPECTED_BEHAVIOR = "startup_and_sse_expose_explicit_patch_identity"
+PATCH_SENTINEL_EXPECTED = "PREMIUM_AUDIT_ROUTING_SENTINEL_12BF_V1"
+PATCH_FEATURE_EXPECTED = "premium_audit_routing_guard"
+PATCH_EXPECTED_BEHAVIOR = "revoke_and_premium_read_only_multiagent_routing"
 
 _GITHUB_RUNTIME_TERMS = [
     "github",
@@ -156,6 +162,50 @@ _GITHUB_AUTH_ACTION_TERMS = [
     "pr",
     "pull request",
     "main",
+]
+
+_GITHUB_REVOKE_TERMS = [
+    "revogo",
+    "revogar",
+    "cancelar autorização",
+    "cancelar autorizacao",
+    "revogo toda autorização",
+    "revogo toda autorizacao",
+]
+
+_PREMIUM_AUDIT_TERMS = [
+    "experiência premium",
+    "experiencia premium",
+    "premium",
+    "irresistível",
+    "irresistivel",
+    "alto valor percebido",
+    "elegante",
+    "fluida",
+    "confiável",
+    "confiavel",
+    "primeira impressão",
+    "primeira impressao",
+    "onboarding",
+    "performance percebida",
+    "consistência visual",
+    "consistencia visual",
+]
+
+_PREMIUM_AUDIT_SCOPE_TERMS = [
+    "somente leitura",
+    "read only",
+    "sem github",
+    "sem branch",
+    "sem patch",
+    "sem commit",
+    "sem pr",
+    "sem pull request",
+    "sem merge",
+    "sem deploy",
+    "sem alterar banco",
+    "sem resposta genérica",
+    "sem resposta generica",
 ]
 
 # =========================
@@ -343,6 +393,13 @@ _PATCH_PLAN_TERMS = [
 def _detect_runtime_operation(text: str) -> Dict[str, Any]:
     txt = _normalize(text)
     direct_orion_diagnostic = _contains_any(txt, _ORION_DIRECT_DIAGNOSTIC_TERMS)
+    premium_audit = (
+        _contains_any(txt, _AUDIT_TERMS)
+        and _contains_any(txt, _PREMIUM_AUDIT_TERMS)
+    ) or (
+        _contains_any(txt, ["varredura profunda", "multiagente", "multiagente e somente leitura", "toda a equipe técnica interna", "toda a equipe tecnica interna"])
+        and _contains_any(txt, _PREMIUM_AUDIT_TERMS + ["usuários", "usuarios", "plataforma inteira"])
+    )
 
     if _contains_any(txt, _SQUAD_TERMS):
         return {
@@ -351,6 +408,38 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "mode": "execute",
             "requires_capability": "agents_registry_read",
             "data_source": "agents_api",
+        }
+
+    if premium_audit:
+        specialist_mode = True
+        wants_execution = True
+        return {
+            "kind": "premium_platform_audit",
+            "target_agent": "orion",
+            "mode": "execute",
+            "audit_mode": "specialist",
+            "prepare_only": False,
+            "execution_depth": "dispatch",
+            "visible_only_agent": "",
+            "response_profile": "premium_platform_audit",
+            "delivery_contract": "premium_platform_audit_v1",
+            "structured_output": True,
+            "dispatch_receipts_expected": True,
+            "specialist_reports_expected": True,
+            "final_consolidation_expected": True,
+            "auditability_expected": True,
+            "execution_audit_expected": True,
+            "persist_execution_audit": True,
+            "specialist_fanout_required": True,
+            "hard_block_github_write": True,
+            "read_only_enforced": True,
+            "github_write_blocked": True,
+            "include_frontend": True,
+            "requested_specialists": ["auditor", "cto", "orion", "chris", "architect", "devops", "security", "memory_ops", "stage_manager"],
+            "premium_sections_required": ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"],
+            "patch_sentinel_expected": PATCH_SENTINEL_EXPECTED,
+            "patch_feature_expected": PATCH_FEATURE_EXPECTED,
+            "patch_expected_behavior": PATCH_EXPECTED_BEHAVIOR,
         }
 
     if direct_orion_diagnostic or _contains_any(txt, _AUDIT_TERMS):
@@ -409,7 +498,8 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "prepare_only": True,
         }
 
-    github_auth_hit = _contains_any(txt, _GITHUB_AUTH_TERMS) and _contains_any(txt, _GITHUB_AUTH_ACTION_TERMS)
+    github_revoke_hit = _contains_any(txt, _GITHUB_REVOKE_TERMS) and _contains_any(txt, _GITHUB_AUTH_ACTION_TERMS)
+    github_auth_hit = (_contains_any(txt, _GITHUB_AUTH_TERMS) or github_revoke_hit) and _contains_any(txt, _GITHUB_AUTH_ACTION_TERMS)
     if github_auth_hit:
         return {
             "kind": "github_runtime_write",
