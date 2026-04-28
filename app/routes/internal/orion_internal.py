@@ -870,6 +870,8 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         "execution_mode": "read_only_dispatch",
         "founder_control_mode": "human_controlled_runtime_only",
         "auditability_status": "ready_for_persistence",
+        "sticky_thread_dispatch_supported": True,
+        "sticky_thread_dispatch_contract": "orion_structured_dispatch_v1",
         "persistable_sections": [
             "technical_summary",
             "executive_diagnostic",
