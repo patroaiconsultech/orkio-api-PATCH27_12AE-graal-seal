@@ -286,6 +286,9 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "dispatch_receipts_expected": bool(wants_execution),
             "specialist_reports_expected": bool(wants_execution),
             "final_consolidation_expected": bool(wants_execution),
+            "auditability_expected": bool(wants_execution),
+            "execution_audit_expected": bool(wants_execution),
+            "persist_execution_audit": bool(wants_execution),
         }
 
     if _contains_any(txt, _RUNTIME_SCAN_TERMS):
@@ -428,6 +431,8 @@ def build_intent_package(
         "requires_capability": runtime_op.get("requires_capability") or "",
         "delivery_contract": runtime_op.get("delivery_contract") or "",
         "structured_output": bool(runtime_op.get("structured_output")),
+        "auditability_expected": bool(runtime_op.get("auditability_expected")),
+        "execution_audit_expected": bool(runtime_op.get("execution_audit_expected")),
         "context_summary": context.get("summary"),
         "first_win_goal": first_win_goal,
         "followup_mode": (
