@@ -709,7 +709,7 @@ def _infer_progressive_dispatch_followup_subtype(message: str) -> str:
 def _dispatch_render_strategy(followup_subtype: str) -> str:
     subtype = (followup_subtype or "").strip().lower()
     if subtype == "executive_format":
-        return "dispatch_executive_compact"
+        return "dispatch_executive_replace"
     if subtype in {"root_causes_risks", "root_causes", "risks", "next_steps", "evidence_preserving"}:
         return "dispatch_progressive_compact"
     if subtype == "continuation":
@@ -1025,6 +1025,12 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
     specialist_reports = _audit_specialist_reports(selected_specialists, scope)
     followup_subtype = _infer_progressive_dispatch_followup_subtype(inp.message)
     render_strategy = _dispatch_render_strategy(followup_subtype)
+    executive_body_mode = "executive_replace" if followup_subtype == "executive_format" else ""
+    compact_dispatch_details = bool(executive_body_mode)
+    dispatch_receipts_appendix = list(dispatch_receipts or []) if compact_dispatch_details else []
+    specialist_reports_appendix = list(specialist_reports or []) if compact_dispatch_details else []
+    body_dispatch_receipts = [] if compact_dispatch_details else dispatch_receipts
+    body_specialist_reports = [] if compact_dispatch_details else specialist_reports
     executive_sections = _build_dispatch_executive_sections(
         direct_orion_diagnostic=direct_orion_diagnostic,
         selected_specialists=selected_specialists,
@@ -1063,7 +1069,9 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
             "recommended_actions",
             "selected_specialists",
             "dispatch_receipts",
+            "dispatch_receipts_appendix",
             "specialist_reports",
+            "specialist_reports_appendix",
             "final_consolidation",
         ],
         "execution_depth": "dispatch",
@@ -1072,6 +1080,8 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         "followup_mode": "progressive_dispatch_followup" if followup_subtype else "execution_receipt",
         "followup_subtype": followup_subtype,
         "render_strategy": render_strategy,
+        "response_body_mode": executive_body_mode,
+        "compact_dispatch_details": compact_dispatch_details,
         "technical_summary": (
             "Síntese executiva progressiva aplicada sobre dispatch confirmado. O backend preservou evidências essenciais e reduziu repetição estrutural."
             if followup_subtype == "executive_format"
@@ -1083,10 +1093,13 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         ),
         "selected_specialists": selected_specialists,
         "selected_specialists_count": counts.get("selected_specialists_count", 0),
-        "dispatch_receipts": dispatch_receipts,
+        "selected_specialists_summary": ", ".join(str(item) for item in list(selected_specialists or [])[:20]),
+        "dispatch_receipts": body_dispatch_receipts,
         "dispatch_receipts_count": counts.get("dispatch_receipts_count", 0),
-        "specialist_reports": specialist_reports,
+        "dispatch_receipts_appendix": dispatch_receipts_appendix,
+        "specialist_reports": body_specialist_reports,
         "specialist_reports_count": counts.get("specialist_reports_count", 0),
+        "specialist_reports_appendix": specialist_reports_appendix,
         "final_consolidation": executive_sections.get("final_consolidation") or (
             "Orion consolidou a análise técnica objetiva como agente único visível. A resposta final deve sair assinada como Orion e não deve recair em PLATFORM_SELF_AUDIT_READY."
             if direct_orion_diagnostic
