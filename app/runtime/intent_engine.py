@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+import re
 
 
 def _normalize(text: str) -> str:
@@ -88,9 +89,9 @@ def _infer_sticky_dispatch_followup_subtype(text: str) -> str:
 # GitHub Runtime Detection
 # =========================
 
-PATCH_SENTINEL_EXPECTED = "FRONTEND_REPO_EMISSION_SENTINEL_12BI_V1"
-PATCH_FEATURE_EXPECTED = "frontend_repo_target_hard_binding_and_proposal_file_emission"
-PATCH_EXPECTED_BEHAVIOR = "frontend_repo_hard_binding_and_proposal_patch_file_emission"
+PATCH_SENTINEL_EXPECTED = "PR_COMPARE_STATUS_SENTINEL_12BR_V1"
+PATCH_FEATURE_EXPECTED = "github_pr_compare_status_resolver"
+PATCH_EXPECTED_BEHAVIOR = "read_only_audit_requests_do_not_fall_into_github_write_and_compare_status_requests_stay_resolved"
 
 _GITHUB_RUNTIME_TERMS = [
     "github",
@@ -436,6 +437,96 @@ _SELF_EVOLUTION_SOURCE_TERMS = [
     "menor risco",
 ]
 
+_AUDIT_READ_ONLY_TERMS = [
+    "somente leitura",
+    "read only",
+    "read-only",
+    "strictly read only",
+    "apenas resposta textual",
+    "quero apenas resposta textual",
+    "não escrever",
+    "nao escrever",
+    "não criar branch",
+    "nao criar branch",
+    "não preparar commit",
+    "nao preparar commit",
+    "não abrir pr",
+    "nao abrir pr",
+    "não aplicar patch",
+    "nao aplicar patch",
+    "não criar arquivo",
+    "nao criar arquivo",
+    "não usar aprovação de escrita",
+    "nao usar aprovacao de escrita",
+    "não usar aprovação de escrita",
+    "não autorizar merge",
+    "nao autorizar merge",
+    "não autorizar deploy",
+    "nao autorizar deploy",
+]
+
+_AUDIT_CLASSIFICATION_TERMS = [
+    "classificação operacional",
+    "classificacao operacional",
+    "capability escolhida",
+    "capability/intenção",
+    "capability/intencao",
+    "arquivo e função",
+    "arquivo e funcao",
+    "ponto exato onde",
+    "mudança mínima para separar",
+    "mudanca minima para separar",
+    "separar audit-read de github-write",
+    "separar read-audit de write-action",
+    "por que auditoria de leitura",
+    "por que pedidos de auditoria",
+]
+
+_GITHUB_COMPARE_STATUS_TERMS = [
+    "status da pr",
+    "status do pr",
+    "verifique o status da pr",
+    "verifique o status do pr",
+    "quero o compare",
+    "compare da",
+    "compare do",
+    "compare a branch",
+    "compare branch",
+    "compare branches",
+    "comparar a branch",
+    "pull request status",
+    "pr status",
+    "github_compare_status",
+]
+
+def _is_github_compare_status_request(text: str) -> bool:
+    txt = _normalize(text)
+    if not txt:
+        return False
+    has_pr_number = bool(re.search(r"\bpr\s*#?\s*\d+\b", txt, flags=re.IGNORECASE))
+    has_compare_phrase = _contains_any(txt, _GITHUB_COMPARE_STATUS_TERMS)
+    has_branch_slug = bool(re.search(r"\b(?:feat|fix|chore|hotfix|refactor|docs|test|build|ci|perf)/[A-Za-z0-9._\-/]+", txt))
+    has_compare_word = ("compare" in txt) or ("comparar" in txt)
+    has_against = any(token in txt for token in [" contra ", " versus ", " vs ", " com a main", " com main", " to main"])
+    has_repo_hint = _contains_any(txt, ["repo", "repositório", "repositorio", "frontend", "backend", "github"])
+    return bool(
+        has_pr_number
+        or has_compare_phrase
+        or (has_compare_word and has_repo_hint and (has_branch_slug or has_against))
+    )
+
+def _is_explicit_read_only_audit_request(text: str) -> bool:
+    txt = _normalize(text)
+    if not txt:
+        return False
+    read_only_hit = _contains_any(txt, _AUDIT_READ_ONLY_TERMS)
+    audit_hit = _contains_any(txt, _AUDIT_TERMS) or _contains_any(txt, _AUDIT_CLASSIFICATION_TERMS)
+    specialist_hit = _contains_any(txt, _SPECIALIST_AUDIT_TERMS) or "@auditor" in txt or "auditor" in txt
+    github_read_context = _contains_any(txt, ["github", "repo", "runtime", "intent_engine.py", "capability_registry.py", "app/main.py", ".py"])
+    no_write_intent = not _contains_any(txt, _GITHUB_AUTH_TERMS + ["crie uma branch", "create branch", "write file", "create file", "apply_patch", "prepare commit", "batch commit", "open pr", "abra pull request"])
+    return bool((read_only_hit and (audit_hit or specialist_hit or github_read_context)) or (audit_hit and specialist_hit and no_write_intent and read_only_hit))
+
+
 def _is_controlled_self_evolution_propose_request(text: str) -> bool:
     txt = _normalize(text)
     if not txt:
@@ -453,6 +544,7 @@ def _is_controlled_self_evolution_propose_request(text: str) -> bool:
 def _detect_runtime_operation(text: str) -> Dict[str, Any]:
     txt = _normalize(text)
     direct_orion_diagnostic = _contains_any(txt, _ORION_DIRECT_DIAGNOSTIC_TERMS)
+    explicit_read_only_audit = _is_explicit_read_only_audit_request(txt)
     premium_audit = (
         _contains_any(txt, _AUDIT_TERMS)
         and _contains_any(txt, _PREMIUM_AUDIT_TERMS)
@@ -460,6 +552,32 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
         _contains_any(txt, ["varredura profunda", "multiagente", "multiagente e somente leitura", "toda a equipe técnica interna", "toda a equipe tecnica interna"])
         and _contains_any(txt, _PREMIUM_AUDIT_TERMS + ["usuários", "usuarios", "plataforma inteira"])
     )
+
+    if explicit_read_only_audit:
+        specialist_mode = _contains_any(txt, _SPECIALIST_AUDIT_TERMS) or "@auditor" in txt or "auditor" in txt
+        visible_only_agent = "orion" if ("@orion" in txt or "como orion" in txt) else ""
+        return {
+            "kind": "platform_audit",
+            "target_agent": "orion",
+            "mode": "execute",
+            "audit_mode": "specialist" if specialist_mode else "standard",
+            "prepare_only": True,
+            "execution_depth": "ready",
+            "visible_only_agent": visible_only_agent,
+            "response_profile": "platform_audit_read_only",
+            "delivery_contract": "orion_audit_ready_v1",
+            "structured_output": False,
+            "dispatch_receipts_expected": False,
+            "specialist_reports_expected": False,
+            "final_consolidation_expected": False,
+            "auditability_expected": True,
+            "execution_audit_expected": False,
+            "persist_execution_audit": False,
+            "hard_block_github_write": True,
+            "read_only_enforced": True,
+            "github_write_blocked": True,
+            "classification_focus": True,
+        }
 
     if _contains_any(txt, _SQUAD_TERMS):
         return {
@@ -562,6 +680,7 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "auditability_expected": bool(wants_execution),
             "execution_audit_expected": bool(wants_execution),
             "persist_execution_audit": bool(wants_execution),
+            "direct_orion": bool(direct_orion_diagnostic or "@orion" in txt or "como orion" in txt),
         }
 
     if _contains_any(txt, _RUNTIME_SCAN_TERMS):
@@ -614,8 +733,43 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "patch_expected_behavior": PATCH_EXPECTED_BEHAVIOR,
         }
 
+    if _is_github_compare_status_request(txt):
+        return {
+            "kind": "github_runtime_compare_status",
+            "target_agent": "orion",
+            "mode": "execute",
+            "requires_capability": "github_pr_compare_status",
+            "response_profile": "github_compare_status",
+            "delivery_contract": "github_compare_status_v1",
+            "compare_status_expected": True,
+            "human_confirmation_required": False,
+            "transactional_flow_required": False,
+            "read_only_enforced": True,
+            "github_write_blocked": True,
+            "patch_sentinel_expected": PATCH_SENTINEL_EXPECTED,
+            "patch_feature_expected": PATCH_FEATURE_EXPECTED,
+            "patch_expected_behavior": PATCH_EXPECTED_BEHAVIOR,
+        }
+
     github_hit = _contains_any(txt, _GITHUB_RUNTIME_TERMS)
     if github_hit:
+        if explicit_read_only_audit:
+            return {
+                "kind": "platform_audit",
+                "target_agent": "orion",
+                "mode": "execute",
+                "audit_mode": "specialist" if _contains_any(txt, _SPECIALIST_AUDIT_TERMS) else "standard",
+                "prepare_only": True,
+                "execution_depth": "ready",
+                "visible_only_agent": "orion" if ("@orion" in txt or "como orion" in txt) else "",
+                "response_profile": "platform_audit_read_only",
+                "delivery_contract": "orion_audit_ready_v1",
+                "structured_output": False,
+                "hard_block_github_write": True,
+                "read_only_enforced": True,
+                "github_write_blocked": True,
+                "classification_focus": True,
+            }
         if _contains_any(txt, _GITHUB_WRITE_TERMS):
             return {
                 "kind": "github_runtime_write",
@@ -738,6 +892,7 @@ def build_intent_package(
         "github_runtime_read",
         "github_runtime_write",
         "github_runtime_general",
+        "github_runtime_compare_status",
     }:
         advisor_agents = ["orion", "metatron"]
 
@@ -774,6 +929,8 @@ def build_intent_package(
         first_win_goal = "return_repo_evidence"
     elif intent == "github_runtime_write":
         first_win_goal = "execute_github_write_with_evidence"
+    elif intent == "github_runtime_compare_status":
+        first_win_goal = "return_pr_compare_status_with_evidence"
 
     return {
         "intent": intent,
