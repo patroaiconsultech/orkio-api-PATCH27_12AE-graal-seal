@@ -7584,10 +7584,21 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     technical_debts_by_severity = result.get("technical_debts_by_severity") if isinstance(result.get("technical_debts_by_severity"), dict) else None
     maturity_conclusion = (result.get("maturity_conclusion") or "").strip()
     report_format = (result.get("report_format") or "").strip()
+    delivery_contract = (result.get("delivery_contract") or "").strip()
     selected_specialists = result.get("selected_specialists") if isinstance(result.get("selected_specialists"), list) else None
     dispatch_receipts = result.get("dispatch_receipts") if isinstance(result.get("dispatch_receipts"), list) else None
     specialist_reports = result.get("specialist_reports") if isinstance(result.get("specialist_reports"), list) else None
+    selected_specialists_count = result.get("selected_specialists_count")
+    dispatch_receipts_count = result.get("dispatch_receipts_count")
+    specialist_reports_count = result.get("specialist_reports_count")
     final_consolidation = (result.get("final_consolidation") or "").strip()
+    executive_diagnostic = (result.get("executive_diagnostic") or "").strip()
+    backend_assessment = (result.get("backend_assessment") or "").strip()
+    frontend_assessment = (result.get("frontend_assessment") or "").strip()
+    integration_assessment = (result.get("integration_assessment") or "").strip()
+    confirmed_evidence = (result.get("confirmed_evidence") or "").strip()
+    main_risk = (result.get("main_risk") or "").strip()
+    recommended_actions = result.get("recommended_actions") if isinstance(result.get("recommended_actions"), list) else None
     execution_depth = (result.get("execution_depth") or "").strip()
     total_entries = result.get("total_entries")
     dirs = result.get("dirs") if isinstance(result.get("dirs"), list) else None
@@ -7625,6 +7636,14 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
             parts.append(f"confidence: {confidence}")
     if execution_depth:
         parts.append(f"execution_depth: {execution_depth}")
+    if delivery_contract:
+        parts.append(f"delivery_contract: {delivery_contract}")
+    if selected_specialists_count not in (None, ""):
+        parts.append(f"selected_specialists_count: {selected_specialists_count}")
+    if dispatch_receipts_count not in (None, ""):
+        parts.append(f"dispatch_receipts_count: {dispatch_receipts_count}")
+    if specialist_reports_count not in (None, ""):
+        parts.append(f"specialist_reports_count: {specialist_reports_count}")
 
     if repository_details:
         parts.append("repository_details:")
@@ -7648,7 +7667,29 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
         parts.append("technical_summary:")
         parts.append(technical_summary)
 
-    if report_format == "dispatch_audit_v1" or event == "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED" or execution_depth == "dispatch":
+    if report_format in {"dispatch_audit_v1", "dispatch_audit_v2", "orion_diagnostic_v1", "orion_diagnostic_prose_v2"} or event == "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED" or event == "ORION_RUNTIME_DIAGNOSTIC_EXECUTED" or execution_depth == "dispatch":
+        if executive_diagnostic:
+            parts.append("executive_diagnostic:")
+            parts.append(executive_diagnostic)
+        if backend_assessment:
+            parts.append("backend_assessment:")
+            parts.append(backend_assessment)
+        if frontend_assessment:
+            parts.append("frontend_assessment:")
+            parts.append(frontend_assessment)
+        if integration_assessment:
+            parts.append("integration_assessment:")
+            parts.append(integration_assessment)
+        if confirmed_evidence:
+            parts.append("confirmed_evidence:")
+            parts.append(confirmed_evidence)
+        if main_risk:
+            parts.append("main_risk:")
+            parts.append(main_risk)
+        if recommended_actions:
+            parts.append("recommended_actions:")
+            parts.extend(f"- {str(item)}" for item in recommended_actions[:20])
+
         if selected_specialists:
             parts.append("selected_specialists:")
             parts.extend(f"- {str(item)}" for item in selected_specialists[:20])
@@ -14565,6 +14606,13 @@ async def chat_stream(
                     "final_signer_agent_id": final_signer_agent_id,
                     "final_signer_agent_name": final_signer_agent_name,
                     "execution_depth": route_debug_payload.get("execution_depth"),
+                    "execution_event": (execution_result or {}).get("event"),
+                    "execution_provider": (execution_result or {}).get("provider"),
+                    "report_format": (execution_result or {}).get("report_format"),
+                    "delivery_contract": (execution_result or {}).get("delivery_contract"),
+                    "selected_specialists_count": (execution_result or {}).get("selected_specialists_count"),
+                    "dispatch_receipts_count": (execution_result or {}).get("dispatch_receipts_count"),
+                    "specialist_reports_count": (execution_result or {}).get("specialist_reports_count"),
                     "preferred_visible_node": route_debug_payload.get("preferred_visible_node"),
                     "visible_node": route_debug_payload.get("visible_node"),
                 }
