@@ -394,6 +394,10 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
                 "target_agent": "orion",
                 "mode": "execute",
                 "requires_capability": "github_repo_write",
+                "response_profile": "github_governed_write",
+                "delivery_contract": "github_governed_write_v1",
+                "approval_required_expected": True,
+                "human_confirmation_required": True,
             }
 
         if _contains_any(txt, _GITHUB_READ_TERMS):
