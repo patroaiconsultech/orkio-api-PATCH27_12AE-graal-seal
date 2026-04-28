@@ -1231,9 +1231,9 @@ def _is_production_env() -> bool:
     return _app_env() == "production"
 
 APP_VERSION = "2.4.0"
-PATCH_SENTINEL = "PREMIUM_AUDIT_ROUTING_SENTINEL_12BF_V1"
-PATCH_FEATURE = "premium_audit_routing_guard"
-PATCH_EXPECTED_BEHAVIOR = "revoke_and_premium_read_only_multiagent_routing"
+PATCH_SENTINEL = "CONTROLLED_SELF_EVOLUTION_SENTINEL_12BH_V1"
+PATCH_FEATURE = "controlled_self_evolution_propose_only"
+PATCH_EXPECTED_BEHAVIOR = "propose_only_backlog_selection_without_github_write"
 RAG_MODE = "keyword"
 
 def patch_id() -> str:
@@ -6176,7 +6176,45 @@ def _github_write_request_flags(user_text: str) -> Dict[str, Any]:
     )
     return requested
 
+def _is_controlled_self_evolution_propose_request_message(
+    user_text: str,
+    runtime_enrichment: Optional[Dict[str, Any]] = None,
+) -> bool:
+    txt = (user_text or "").strip().lower()
+    if not txt:
+        return False
+    runtime_kind = str((((runtime_enrichment or {}).get("intent_package") or {}).get("runtime_operation") or {}).get("kind") or "").strip().lower()
+    response_profile = str((((runtime_enrichment or {}).get("planner_snapshot") or {}).get("response_profile") or "")).strip().lower()
+    if runtime_kind == "controlled_self_evolution_propose_only" or response_profile == "controlled_self_evolution_propose_only":
+        return True
+    evolution_markers = (
+        "autoevolução controlada",
+        "autoevolucao controlada",
+        "auto evolucao controlada",
+        "ciclo de autoevolução",
+        "ciclo de autoevolucao",
+        "self evolution",
+        "self-evolution",
+        "evolução controlada",
+        "evolucao controlada",
+    )
+    scope_markers = (
+        "propose_only",
+        "modo propose_only",
+        "somente proposta",
+        "apenas proposta",
+        "última auditoria premium",
+        "ultima auditoria premium",
+        "backlog priorizado",
+        "melhoria de maior impacto",
+        "menor risco",
+    )
+    return any(marker in txt for marker in evolution_markers) and any(marker in txt for marker in scope_markers)
+
+
 def _is_github_write_request_or_authorization(user_text: str) -> bool:
+    if _is_controlled_self_evolution_propose_request_message(user_text):
+        return False
     req = _github_write_request_flags(user_text)
     auth = _github_write_authorization_flags(user_text)
     return bool(
@@ -6748,8 +6786,8 @@ def _should_force_runtime_dispatch_over_catalog(
         runtime_operation.get("force_dispatch")
         or runtime_hints.get("force_runtime_dispatch")
         or execution_depth == "dispatch"
-        or runtime_kind in {"platform_audit", "premium_platform_audit"}
-        or response_profile in {"orion_objective_diagnostic", "premium_platform_audit"}
+        or runtime_kind in {"platform_audit", "premium_platform_audit", "controlled_self_evolution_propose_only"}
+        or response_profile in {"orion_objective_diagnostic", "premium_platform_audit", "controlled_self_evolution_propose_only"}
     )
 
 def _apply_forced_orion_runtime_dispatch_enrichment(
@@ -8001,6 +8039,71 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     if technical_summary:
         parts.append("technical_summary:")
         parts.append(technical_summary)
+
+    if report_format == "controlled_self_evolution_propose_only_v1" or event == "CONTROLLED_SELF_EVOLUTION_PROPOSED":
+        selected_improvement = (result.get("selected_improvement") or "").strip()
+        root_cause = (result.get("root_cause") or "").strip()
+        user_impact = (result.get("user_impact") or "").strip()
+        technical_risk = (result.get("technical_risk") or "").strip()
+        probable_files = result.get("probable_files") if isinstance(result.get("probable_files"), list) else []
+        implementation_steps = result.get("implementation_steps") if isinstance(result.get("implementation_steps"), list) else []
+        priority_score_label = (result.get("priority_score_label") or "").strip()
+        next_authorization_command = (result.get("next_authorization_command") or "").strip()
+        source_audit_event = (result.get("source_audit_event") or "").strip()
+        source_audit_reference = (result.get("source_audit_reference") or "").strip()
+        if selected_specialists:
+            parts.append("selected_specialists:")
+            parts.append(", ".join(str(item) for item in selected_specialists[:20]))
+        if github_write_blocked is not None:
+            parts.append(f"github_write_blocked: {bool(github_write_blocked)}")
+        if specialist_fanout_applied is not None:
+            parts.append(f"specialist_fanout_applied: {bool(specialist_fanout_applied)}")
+        if result.get("approval_required_for_pr") is not None:
+            parts.append(f"approval_required_for_pr: {bool(result.get('approval_required_for_pr'))}")
+        if technical_summary:
+            parts.append("technical_summary:")
+            parts.append(technical_summary)
+        if selected_improvement:
+            parts.append("A. melhoria escolhida")
+            parts.append(selected_improvement)
+        if root_cause:
+            parts.append("B. causa raiz")
+            parts.append(root_cause)
+        if user_impact:
+            parts.append("C. impacto no usuário")
+            parts.append(user_impact)
+        if technical_risk:
+            parts.append("D. risco técnico")
+            parts.append(technical_risk)
+        if probable_files:
+            parts.append("E. arquivos/repo prováveis")
+            parts.extend(f"- {str(item)}" for item in probable_files[:20])
+        if implementation_steps:
+            parts.append("F. proposta de implementação")
+            parts.extend(f"- {str(item)}" for item in implementation_steps[:20])
+        if priority_score_label:
+            parts.append("G. score de prioridade")
+            parts.append(priority_score_label)
+        elif result.get("priority_score") is not None:
+            parts.append("G. score de prioridade")
+            parts.append(str(result.get("priority_score")))
+        parts.append("H. PR necessária")
+        parts.append("sim" if bool(result.get("pr_required")) else "não")
+        parts.append("I. aprovação humana necessária")
+        parts.append("sim" if bool(result.get("human_approval_required")) else "não")
+        if next_authorization_command:
+            parts.append("J. próximo comando exato para eu autorizar")
+            parts.append(next_authorization_command)
+        if source_audit_event or source_audit_reference:
+            parts.append("source_audit:")
+            if source_audit_event:
+                parts.append(f"- event: {source_audit_event}")
+            if source_audit_reference:
+                parts.append(f"- referência: {source_audit_reference}")
+        if final_consolidation:
+            parts.append("final_consolidation:")
+            parts.append(final_consolidation)
+        return "\n".join([str(x).rstrip() for x in parts if str(x).strip()])
 
     if report_format == "premium_platform_audit_v1" or event == "PLATFORM_PREMIUM_AUDIT_EXECUTED":
         if selected_specialists:
@@ -9822,6 +9925,15 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         "patch_sentinel",
         "patch_feature",
         "patch_expected_behavior",
+        "evolution_mode",
+        "selected_improvement",
+        "root_cause",
+        "user_impact",
+        "technical_risk",
+        "priority_score_label",
+        "next_authorization_command",
+        "source_audit_event",
+        "source_audit_reference",
     ]
     scalar_numeric_fields = [
         "selected_specialists_count",
@@ -9831,6 +9943,7 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         "compare_files_count",
         "total_entries",
         "count",
+        "priority_score",
     ]
     scalar_passthrough_fields = [
         "compact_dispatch_details",
@@ -9838,6 +9951,9 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         "specialist_fanout_applied",
         "auditability_status",
         "sticky_thread_dispatch_supported",
+        "pr_required",
+        "human_approval_required",
+        "approval_required_for_pr",
     ]
     list_fields = [
         "repositories",
@@ -9861,6 +9977,8 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         "improvements_7d",
         "improvements_30d",
         "premium_blockers",
+        "probable_files",
+        "implementation_steps",
         "files",
         "items",
         "dirs",
@@ -10354,7 +10472,7 @@ def _execute_capability_if_authorized(
     allow_runtime_execution = (
         runtime_kind.startswith("github_runtime_")
         or required_capability.startswith("github_")
-        or runtime_kind in {"platform_audit", "premium_platform_audit", "runtime_scan", "repo_scan", "security_scan", "patch_plan", "squad_list"}
+        or runtime_kind in {"platform_audit", "premium_platform_audit", "controlled_self_evolution_propose_only", "runtime_scan", "repo_scan", "security_scan", "patch_plan", "squad_list"}
     )
     if not allow_runtime_execution:
         return None
@@ -10374,6 +10492,8 @@ def _execute_capability_if_authorized(
             txt,
             requested_specialists=requested_specialists,
         )
+    elif runtime_kind == "controlled_self_evolution_propose_only":
+        txt = txt or "Execute um ciclo de autoevolução controlada em modo propose_only usando a última auditoria premium."
     elif runtime_kind == "platform_audit" and bool(runtime_operation.get("force_dispatch")):
         txt = _canonicalize_platform_audit_runtime_message(
             txt,
@@ -11494,7 +11614,13 @@ def chat(
         # PATCH27_12AJ — should_execute_runtime decidido antes do loop
         if blocked_reply is None:
             try:
-                if _is_explicit_github_create_branch_command(inp.message) or _is_github_write_request_or_authorization(inp.message):
+                if _is_controlled_self_evolution_propose_request_message(inp.message, runtime_enrichment=runtime_enrichment):
+                    execution_result = _execute_capability_if_authorized(
+                        inp.message,
+                        trace_id=getattr(inp, "trace_id", None),
+                        runtime_enrichment=runtime_enrichment,
+                    )
+                elif _is_explicit_github_create_branch_command(inp.message) or _is_github_write_request_or_authorization(inp.message):
                     governed_dispatch = _dispatch_governed_github_write(
                         org=org,
                         thread_id=getattr(inp, "thread_id", None),
