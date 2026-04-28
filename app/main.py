@@ -7610,6 +7610,39 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     backend_root_entries = result.get("backend_root_entries") if isinstance(result.get("backend_root_entries"), list) else None
     frontend_root_entries = result.get("frontend_root_entries") if isinstance(result.get("frontend_root_entries"), list) else None
 
+    if render_strategy == "dispatch_executive_compact":
+        compact_parts = ["Diagnóstico executivo com confirmação operacional verificável."]
+        if event:
+            compact_parts.append(f"event: {event}")
+        if provider:
+            compact_parts.append(f"provider: {provider}")
+        if execution_depth:
+            compact_parts.append(f"execution_depth: {execution_depth}")
+        if selected_specialists_count not in (None, ""):
+            compact_parts.append(f"selected_specialists_count: {selected_specialists_count}")
+        elif selected_specialists:
+            compact_parts.append(f"selected_specialists_count: {len(selected_specialists)}")
+        if dispatch_receipts_count not in (None, ""):
+            compact_parts.append(f"dispatch_receipts_count: {dispatch_receipts_count}")
+        if specialist_reports_count not in (None, ""):
+            compact_parts.append(f"specialist_reports_count: {specialist_reports_count}")
+        if executive_diagnostic:
+            compact_parts.append("executive_diagnostic:")
+            compact_parts.append(executive_diagnostic)
+        if confirmed_evidence:
+            compact_parts.append("confirmed_evidence:")
+            compact_parts.append(confirmed_evidence)
+        if main_risk:
+            compact_parts.append("main_risk:")
+            compact_parts.append(main_risk)
+        if recommended_actions:
+            compact_parts.append("recommended_actions:")
+            compact_parts.extend(f"- {str(item)}" for item in recommended_actions[:8])
+        if final_consolidation:
+            compact_parts.append("final_consolidation:")
+            compact_parts.append(final_consolidation)
+        return "\n".join([str(x).rstrip() for x in compact_parts if str(x).strip()])
+
     if commit_sha:
         parts.append(f"commit: {commit_sha[:12]}")
     if sha:
