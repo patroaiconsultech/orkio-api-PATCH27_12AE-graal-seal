@@ -143,6 +143,7 @@ def _safe_patch_policy() -> Dict[str, Any]:
             "pull_request_opened",
         ],
         "pr_open_requires_branch_and_commit": True,
+        "approval_grant_expands_transaction_prerequisites": True,
     }
 
 
