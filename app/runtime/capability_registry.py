@@ -103,6 +103,12 @@ CAPABILITY_EXECUTION_BINDINGS = {
         "allowed_agents": ["orkio", "orion", "auditor", "cto", "chris"],
         "write": False,
     },
+    "controlled_self_evolution_execute_proposal": {
+        "executor": "orion_internal.github_execute",
+        "mode": "runtime",
+        "allowed_agents": ["orion"],
+        "write": True,
+    },
 }
 
 
@@ -123,6 +129,7 @@ CAPABILITY_REGISTRY = {
             "controlled_self_evolution_propose_only",
             "premium_audit_backlog_generate",
             "premium_audit_patch_candidate_select",
+            "controlled_self_evolution_execute_proposal",
         ],
         "triggers": [
             "default",
@@ -187,6 +194,8 @@ CAPABILITY_REGISTRY = {
             "platform",
             "plataforma",
             "squad",
+            "frontend",
+            "empty state premium",
         ],
         "dependencies": ["orkio"],
         "priority": 98,
