@@ -57,6 +57,27 @@ def _looks_like_sticky_dispatch_followup(text: str) -> bool:
     return any(term in txt for term in patterns)
 
 
+
+
+def _infer_sticky_dispatch_followup_subtype(text: str) -> str:
+    txt = _normalize(text)
+    if not txt:
+        return ""
+    if "formato executivo" in txt or "diagnóstico executivo" in txt or "diagnostico executivo" in txt:
+        return "executive_format"
+    if "causas raiz" in txt and ("riscos estruturais" in txt or "riscos" in txt):
+        return "root_causes_risks"
+    if "causas raiz" in txt:
+        return "root_causes"
+    if "riscos estruturais" in txt:
+        return "risks"
+    if "próximos passos" in txt or "proximos passos" in txt:
+        return "next_steps"
+    if "sem perder evidências" in txt or "sem perder evidencias" in txt or "evidências técnicas" in txt or "evidencias tecnicas" in txt:
+        return "evidence_preserving"
+    if any(term in txt for term in ("continue", "prossiga", "aprofunde", "desdobre", "expanda", "refine")):
+        return "continuation"
+    return ""
 # =========================
 # GitHub Runtime Detection
 # =========================
@@ -406,6 +427,7 @@ def build_intent_package(
 
     runtime_op = _detect_runtime_operation(text)
     if (not runtime_op.get("kind")) and _context_has_sticky_dispatch(context) and _looks_like_sticky_dispatch_followup(text):
+        followup_subtype = _infer_sticky_dispatch_followup_subtype(text)
         runtime_op = {
             "kind": "platform_audit",
             "target_agent": "orion",
@@ -414,7 +436,7 @@ def build_intent_package(
             "prepare_only": False,
             "execution_depth": "dispatch",
             "visible_only_agent": "orion",
-            "response_profile": "orion_objective_diagnostic",
+            "response_profile": "orion_objective_diagnostic_followup",
             "delivery_contract": "orion_structured_dispatch_v1",
             "structured_output": True,
             "dispatch_receipts_expected": True,
@@ -427,6 +449,8 @@ def build_intent_package(
             "sticky_dispatch_followup": True,
             "sticky_dispatch_event": str((context or {}).get("sticky_dispatch_event") or "").strip(),
             "requested_specialists": list((context or {}).get("sticky_selected_specialists") or []),
+            "followup_mode": "progressive_dispatch_followup",
+            "followup_subtype": followup_subtype or "continuation",
         }
     elif runtime_op.get("kind") == "platform_audit" and _context_has_sticky_dispatch(context):
         runtime_op["contract_inherited_from_thread"] = bool(runtime_op.get("contract_inherited_from_thread") or _looks_like_sticky_dispatch_followup(text))
@@ -435,6 +459,8 @@ def build_intent_package(
             runtime_op["sticky_dispatch_event"] = str((context or {}).get("sticky_dispatch_event") or "").strip()
             runtime_op["delivery_contract"] = runtime_op.get("delivery_contract") or "orion_structured_dispatch_v1"
             runtime_op["persist_execution_audit"] = True
+            runtime_op["followup_mode"] = runtime_op.get("followup_mode") or "progressive_dispatch_followup"
+            runtime_op["followup_subtype"] = runtime_op.get("followup_subtype") or _infer_sticky_dispatch_followup_subtype(text) or "continuation"
     intent = runtime_op.get("kind") or "general_guidance"
 
     recommended_agents = ["orkio"]
@@ -475,11 +501,22 @@ def build_intent_package(
     first_win_goal = "deliver_clear_next_step"
 
     if intent == "platform_audit":
-        first_win_goal = (
-            "execute_orion_objective_diagnostic"
-            if runtime_op.get("visible_only_agent") == "orion"
-            else "produce_specialist_audit_plan"
-        )
+        if runtime_op.get("sticky_dispatch_followup"):
+            subtype = str(runtime_op.get("followup_subtype") or "").strip().lower()
+            first_win_goal = {
+                "executive_format": "deliver_progressive_executive_dispatch_followup",
+                "root_causes_risks": "deepen_root_causes_and_risks_from_dispatch",
+                "root_causes": "deepen_root_causes_from_dispatch",
+                "risks": "deepen_structural_risks_from_dispatch",
+                "next_steps": "turn_dispatch_into_next_steps",
+                "evidence_preserving": "preserve_evidence_while_reframing_dispatch",
+            }.get(subtype, "continue_structured_dispatch_without_regression")
+        else:
+            first_win_goal = (
+                "execute_orion_objective_diagnostic"
+                if runtime_op.get("visible_only_agent") == "orion"
+                else "produce_specialist_audit_plan"
+            )
     elif intent == "patch_plan":
         first_win_goal = "prepare_safe_patch_plan"
     elif intent == "runtime_scan":
@@ -511,8 +548,10 @@ def build_intent_package(
         "context_summary": context.get("summary"),
         "first_win_goal": first_win_goal,
         "followup_mode": (
-            "execution_receipt" if runtime_op.get("kind") else "light_checkin"
+            runtime_op.get("followup_mode")
+            or ("execution_receipt" if runtime_op.get("kind") else "light_checkin")
         ),
+        "followup_subtype": runtime_op.get("followup_subtype") or "",
         "contract_inherited_from_thread": bool(runtime_op.get("contract_inherited_from_thread")),
         "sticky_dispatch_followup": bool(runtime_op.get("sticky_dispatch_followup")),
     }
