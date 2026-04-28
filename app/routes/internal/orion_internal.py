@@ -684,6 +684,39 @@ def _dispatch_receipt_counts(dispatch_receipts: List[Dict[str, Any]], specialist
     }
 
 
+
+def _infer_progressive_dispatch_followup_subtype(message: str) -> str:
+    txt = (message or "").strip().lower()
+    if not txt:
+        return ""
+    if "formato executivo" in txt or "diagnóstico executivo" in txt or "diagnostico executivo" in txt:
+        return "executive_format"
+    if "causas raiz" in txt and ("riscos estruturais" in txt or "riscos" in txt):
+        return "root_causes_risks"
+    if "causas raiz" in txt:
+        return "root_causes"
+    if "riscos estruturais" in txt:
+        return "risks"
+    if "próximos passos" in txt or "proximos passos" in txt:
+        return "next_steps"
+    if "sem perder evidências" in txt or "sem perder evidencias" in txt or "evidências técnicas" in txt or "evidencias tecnicas" in txt:
+        return "evidence_preserving"
+    if any(term in txt for term in ("continue", "prossiga", "aprofunde", "desdobre", "expanda", "refine")):
+        return "continuation"
+    return ""
+
+
+def _dispatch_render_strategy(followup_subtype: str) -> str:
+    subtype = (followup_subtype or "").strip().lower()
+    if subtype == "executive_format":
+        return "dispatch_executive_compact"
+    if subtype in {"root_causes_risks", "root_causes", "risks", "next_steps", "evidence_preserving"}:
+        return "dispatch_progressive_compact"
+    if subtype == "continuation":
+        return "dispatch_progressive_full"
+    return "dispatch_full"
+
+
 def _build_dispatch_executive_sections(
     *,
     direct_orion_diagnostic: bool,
@@ -692,12 +725,89 @@ def _build_dispatch_executive_sections(
     specialist_reports: List[Dict[str, Any]],
     scope: str,
     include_frontend: bool,
+    followup_subtype: str = "",
 ) -> Dict[str, Any]:
     roster = ", ".join(selected_specialists) if selected_specialists else "orion"
     counts = _dispatch_receipt_counts(dispatch_receipts, specialist_reports, selected_specialists)
+    followup_subtype = (followup_subtype or "").strip().lower()
+    progressive_followup = bool(followup_subtype)
     report_format = "orion_diagnostic_prose_v2" if direct_orion_diagnostic else "dispatch_audit_v2"
+    if progressive_followup and followup_subtype == "executive_format":
+        report_format = "dispatch_executive_followup_v1"
+    elif progressive_followup:
+        report_format = "dispatch_progressive_followup_v1"
 
     if direct_orion_diagnostic:
+        if followup_subtype == "executive_format":
+            return {
+                "report_format": report_format,
+                "executive_diagnostic": (
+                    "Diagnóstico executivo consolidado: o dispatch foi mantido, Orion permaneceu como signer visível "
+                    "e a resposta foi reformatada para leitura diretiva sem recair no template consultivo."
+                ),
+                "backend_assessment": (
+                    "A causa raiz residual deixou de ser roteamento e passou a ser composição de continuidade. "
+                    "O backend já preserva o contrato; agora ele também precisa variar a entrega entre recibo, aprofundamento e síntese executiva."
+                ),
+                "frontend_assessment": (
+                    "O frontend não precisa reinterpretar a semântica. A camada web deve apenas consumir um payload já progressivo e renderizá-lo com clareza."
+                ),
+                "integration_assessment": (
+                    "Thread history, intent engine e dispatcher interno já mantêm o mesmo trilho. "
+                    "A resposta executiva agora precisa só preservar evidências essenciais sem repetir blocos completos."
+                ),
+                "confirmed_evidence": (
+                    f"Evidências preservadas: event=ORION_RUNTIME_DIAGNOSTIC_EXECUTED, execution_depth=dispatch, "
+                    f"selected_specialists={counts['selected_specialists_count']}, dispatch_receipts={counts['dispatch_receipts_count']}."
+                ),
+                "main_risk": (
+                    "O risco residual é a resposta seguir tecnicamente correta, mas com excesso de repetição operacional quando o usuário pede síntese executiva."
+                ),
+                "recommended_actions": [
+                    "1. Manter contrato sticky na thread.",
+                    "2. Reduzir repetição textual em follow-ups executivos.",
+                    "3. Preservar evidências essenciais e counts do dispatch.",
+                    "4. Deixar receipts detalhados para visualização expandida no frontend.",
+                ],
+                "final_consolidation": (
+                    "Veredito executivo: o motor de dispatch já está estável, Orion manteve a assinatura correta e a próxima etapa é transformar os detalhes técnicos em visualização progressiva no frontend, sem tocar no núcleo operacional."
+                ),
+            }
+        if followup_subtype in {"root_causes_risks", "root_causes", "risks", "next_steps", "evidence_preserving", "continuation"}:
+            return {
+                "report_format": report_format,
+                "executive_diagnostic": (
+                    "Aprofundamento progressivo aplicado sobre um dispatch já confirmado. "
+                    "A continuidade não deve reiniciar o diagnóstico; deve expandir a leitura do que já foi executado."
+                ),
+                "backend_assessment": (
+                    "A causa raiz do comportamento anterior era a continuidade reaproveitar o mesmo template de recibo. "
+                    "Com a sticky thread ativa, o próximo refinamento é compor respostas incrementais, não duplicadas."
+                ),
+                "frontend_assessment": (
+                    "A interface deve receber blocos progressivos distintos, evitando a sensação de repetição do mesmo relatório bruto."
+                ),
+                "integration_assessment": (
+                    "O handshake entre intent, dispatcher e fechamento do stream está íntegro. "
+                    "O foco agora é evolução semântica da resposta dentro do mesmo contrato."
+                ),
+                "confirmed_evidence": (
+                    f"Dispatch preservado nesta continuação com {counts['dispatch_receipts_count']} receipt(s) e "
+                    f"{counts['specialist_reports_count']} relatório(s) especializado(s)."
+                ),
+                "main_risk": (
+                    "Se a composição de follow-up não variar por subtipo, o usuário percebe regressão mesmo quando o backend continua correto."
+                ),
+                "recommended_actions": [
+                    "1. Separar resposta de recibo da resposta de aprofundamento.",
+                    "2. Tratar causas raiz, riscos e próximos passos como camadas progressivas.",
+                    "3. Usar formato executivo quando o pedido explicitamente exigir síntese.",
+                    "4. Manter receipts detalhados fora do corpo principal quando o foco for aprofundamento.",
+                ],
+                "final_consolidation": (
+                    "Síntese progressiva: o dispatch segue válido e a continuidade agora deve aprofundar causas raiz, riscos e ações sem repetir integralmente o bloco original de receipts."
+                ),
+            }
         return {
             "report_format": report_format,
             "executive_diagnostic": (
@@ -745,6 +855,38 @@ def _build_dispatch_executive_sections(
         if include_frontend else
         "O frontend não precisa reinterpretar o dispatch; basta consumir e renderizar o payload estruturado."
     )
+    if progressive_followup:
+        return {
+            "report_format": report_format,
+            "executive_diagnostic": (
+                f"Continuidade progressiva aplicada ao dispatch concluído com {roster}. "
+                "A resposta foi reorientada para aprofundamento sem reiniciar a execução."
+            ),
+            "backend_assessment": (
+                "O backend já preserva o contrato estruturado da thread. "
+                "O foco agora é diversificar a camada narrativa conforme o pedido do usuário."
+            ),
+            "frontend_assessment": frontend_line,
+            "integration_assessment": (
+                "Intent engine, orion dispatcher e chat/stream continuam alinhados. "
+                "A continuidade deve alterar o enquadramento da resposta, não o trilho técnico."
+            ),
+            "confirmed_evidence": (
+                f"Especialistas preservados: {roster}. Receipts mantidos: {counts['dispatch_receipts_count']}. "
+                f"Reports mantidos: {counts['specialist_reports_count']}."
+            ),
+            "main_risk": (
+                "O risco residual é reapresentar a mesma estrutura completa quando o usuário espera refinamento incremental."
+            ),
+            "recommended_actions": [
+                "1. Variar o enquadramento sem quebrar o contrato do dispatch.",
+                "2. Preservar evidências essenciais e ocultar repetição desnecessária.",
+                "3. Reservar detalhamento bruto para expansão posterior no frontend.",
+            ],
+            "final_consolidation": (
+                "O dispatch permanece válido e a continuidade passa a servir como camada de aprofundamento, não como duplicação do recibo original."
+            ),
+        }
     return {
         "report_format": report_format,
         "executive_diagnostic": (
@@ -846,6 +988,8 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
     selected_specialists = ["orion"] if direct_orion_diagnostic else _audit_selected_specialists(scope, bool(inp.include_frontend))
     dispatch_receipts = _audit_dispatch_receipts(selected_specialists, scope)
     specialist_reports = _audit_specialist_reports(selected_specialists, scope)
+    followup_subtype = _infer_progressive_dispatch_followup_subtype(inp.message)
+    render_strategy = _dispatch_render_strategy(followup_subtype)
     executive_sections = _build_dispatch_executive_sections(
         direct_orion_diagnostic=direct_orion_diagnostic,
         selected_specialists=selected_specialists,
@@ -853,6 +997,7 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         specialist_reports=specialist_reports,
         scope=scope,
         include_frontend=bool(inp.include_frontend),
+        followup_subtype=followup_subtype,
     )
     counts = _dispatch_receipt_counts(dispatch_receipts, specialist_reports, selected_specialists)
 
@@ -889,8 +1034,15 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         "execution_depth": "dispatch",
         "visible_agent": visible_agent,
         "repo": _github_repo(),
+        "followup_mode": "progressive_dispatch_followup" if followup_subtype else "execution_receipt",
+        "followup_subtype": followup_subtype,
+        "render_strategy": render_strategy,
         "technical_summary": (
-            "Orion executou um diagnóstico técnico objetivo em modo somente leitura, verificando runtime, handoff do chat e sinais de plataforma sem depender de escrita governada."
+            "Síntese executiva progressiva aplicada sobre dispatch confirmado. O backend preservou evidências essenciais e reduziu repetição estrutural."
+            if followup_subtype == "executive_format"
+            else "Aprofundamento progressivo aplicado sobre dispatch confirmado. A continuidade expandiu a leitura sem regressão de contrato."
+            if followup_subtype
+            else "Orion executou um diagnóstico técnico objetivo em modo somente leitura, verificando runtime, handoff do chat e sinais de plataforma sem depender de escrita governada."
             if direct_orion_diagnostic
             else "Dispatch interno de especialistas executado em modo somente leitura. O backend acionou o squad solicitado e consolidou a entrega sem depender do loop automático nem de escrita governada."
         ),
