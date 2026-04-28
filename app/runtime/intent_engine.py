@@ -88,9 +88,9 @@ def _infer_sticky_dispatch_followup_subtype(text: str) -> str:
 # GitHub Runtime Detection
 # =========================
 
-PATCH_SENTINEL_EXPECTED = "PREMIUM_AUDIT_ROUTING_SENTINEL_12BF_V1"
-PATCH_FEATURE_EXPECTED = "premium_audit_routing_guard"
-PATCH_EXPECTED_BEHAVIOR = "revoke_and_premium_read_only_multiagent_routing"
+PATCH_SENTINEL_EXPECTED = "PREMIUM_AUDIT_RENDERER_SENTINEL_12BG_V1"
+PATCH_FEATURE_EXPECTED = "premium_audit_final_renderer"
+PATCH_EXPECTED_BEHAVIOR = "premium_audit_full_A_to_J_renderer_and_preserved_payload_fields"
 
 _GITHUB_RUNTIME_TERMS = [
     "github",
@@ -423,6 +423,8 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "visible_only_agent": "",
             "response_profile": "premium_platform_audit",
             "delivery_contract": "premium_platform_audit_v1",
+            "render_strategy": "premium_audit_A_to_J_full",
+            "response_body_mode": "premium_audit_full_renderer",
             "structured_output": True,
             "dispatch_receipts_expected": True,
             "specialist_reports_expected": True,
