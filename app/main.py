@@ -7549,6 +7549,9 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     title = (result.get("title") or "").strip()
     root_path = (result.get("root_path") or "").strip()
     technical_summary = (result.get("technical_summary") or "").strip()
+    followup_mode = (result.get("followup_mode") or "").strip()
+    followup_subtype = (result.get("followup_subtype") or "").strip()
+    render_strategy = (result.get("render_strategy") or "").strip()
 
     pr_num = int(result.get("pull_request_number") or 0)
     pr_url = (result.get("pull_request_url") or "").strip()
@@ -7644,6 +7647,10 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
         parts.append(f"dispatch_receipts_count: {dispatch_receipts_count}")
     if specialist_reports_count not in (None, ""):
         parts.append(f"specialist_reports_count: {specialist_reports_count}")
+    if followup_mode:
+        parts.append(f"followup_mode: {followup_mode}")
+    if followup_subtype:
+        parts.append(f"followup_subtype: {followup_subtype}")
 
     if repository_details:
         parts.append("repository_details:")
@@ -7667,7 +7674,8 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
         parts.append("technical_summary:")
         parts.append(technical_summary)
 
-    if report_format in {"dispatch_audit_v1", "dispatch_audit_v2", "orion_diagnostic_v1", "orion_diagnostic_prose_v2"} or event == "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED" or event == "ORION_RUNTIME_DIAGNOSTIC_EXECUTED" or execution_depth == "dispatch":
+    if report_format in {"dispatch_audit_v1", "dispatch_audit_v2", "orion_diagnostic_v1", "orion_diagnostic_prose_v2", "dispatch_executive_followup_v1", "dispatch_progressive_followup_v1"} or event == "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED" or event == "ORION_RUNTIME_DIAGNOSTIC_EXECUTED" or execution_depth == "dispatch":
+        suppress_dispatch_detail_blocks = render_strategy in {"dispatch_executive_compact", "dispatch_progressive_compact"}
         if executive_diagnostic:
             parts.append("executive_diagnostic:")
             parts.append(executive_diagnostic)
@@ -7690,11 +7698,14 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
             parts.append("recommended_actions:")
             parts.extend(f"- {str(item)}" for item in recommended_actions[:20])
 
-        if selected_specialists:
+        if selected_specialists and suppress_dispatch_detail_blocks:
+            parts.append("selected_specialists:")
+            parts.append(", ".join(str(item) for item in selected_specialists[:20]))
+        elif selected_specialists:
             parts.append("selected_specialists:")
             parts.extend(f"- {str(item)}" for item in selected_specialists[:20])
 
-        if dispatch_receipts:
+        if dispatch_receipts and not suppress_dispatch_detail_blocks:
             parts.append("dispatch_receipts:")
             for item in dispatch_receipts[:20]:
                 if not isinstance(item, dict):
@@ -7709,7 +7720,7 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
                     )
                 )
 
-        if specialist_reports:
+        if specialist_reports and not suppress_dispatch_detail_blocks:
             parts.append("specialist_reports:")
             for item in specialist_reports[:20]:
                 if not isinstance(item, dict):
@@ -9976,6 +9987,9 @@ def _build_dispatch_audit_envelope(
         "execution_depth": execution_depth,
         "report_format": report_format,
         "delivery_contract": delivery_contract,
+        "followup_mode": _trim_dispatch_text(execution_data.get("followup_mode"), limit=120),
+        "followup_subtype": _trim_dispatch_text(execution_data.get("followup_subtype"), limit=120),
+        "render_strategy": _trim_dispatch_text(execution_data.get("render_strategy"), limit=120),
         "execution_mode": _trim_dispatch_text(execution_data.get("execution_mode"), limit=80) or "read_only_dispatch",
         "founder_control_mode": _trim_dispatch_text(execution_data.get("founder_control_mode"), limit=120) or "human_controlled_runtime_only",
         "auditability_status": _trim_dispatch_text(execution_data.get("auditability_status"), limit=120) or "ready_for_persistence",
@@ -15067,6 +15081,9 @@ async def chat_stream(
                     "execution_provider": (execution_result or {}).get("provider"),
                     "report_format": (execution_result or {}).get("report_format"),
                     "delivery_contract": (execution_result or {}).get("delivery_contract"),
+                    "followup_mode": (execution_result or {}).get("followup_mode"),
+                    "followup_subtype": (execution_result or {}).get("followup_subtype"),
+                    "render_strategy": (execution_result or {}).get("render_strategy"),
                     "audit_payload_version": (execution_result or {}).get("audit_payload_version"),
                     "execution_mode": (execution_result or {}).get("execution_mode"),
                     "founder_control_mode": (execution_result or {}).get("founder_control_mode"),
