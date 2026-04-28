@@ -126,6 +126,7 @@ def _safe_patch_policy() -> Dict[str, Any]:
         "pr_enabled": _github_pr_enabled(),
         "main_direct_write_allowed": _main_direct_allowed(),
         "require_explicit_deploy_approval": _bool_env("REQUIRE_EXPLICIT_DEPLOY_APPROVAL", True),
+        "require_explicit_pr_approval": _bool_env("REQUIRE_EXPLICIT_PR_APPROVAL", True),
         "require_explicit_db_approval": _bool_env("REQUIRE_EXPLICIT_DB_APPROVAL", True),
         "db_runtime_allow_destructive": _bool_env("DB_RUNTIME_ALLOW_DESTRUCTIVE", False),
         "controlled_overlay_enabled": _bool_env("CONTROLLED_EVOLUTION_OVERLAY_ENABLED", True),
