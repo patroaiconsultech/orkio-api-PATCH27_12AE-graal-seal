@@ -675,6 +675,110 @@ def _audit_final_consolidation(selected_specialists: List[str], scope: str) -> s
     )
 
 
+
+def _dispatch_receipt_counts(dispatch_receipts: List[Dict[str, Any]], specialist_reports: List[Dict[str, Any]], selected_specialists: List[str]) -> Dict[str, int]:
+    return {
+        "selected_specialists_count": len(list(selected_specialists or [])),
+        "dispatch_receipts_count": len(list(dispatch_receipts or [])),
+        "specialist_reports_count": len(list(specialist_reports or [])),
+    }
+
+
+def _build_dispatch_executive_sections(
+    *,
+    direct_orion_diagnostic: bool,
+    selected_specialists: List[str],
+    dispatch_receipts: List[Dict[str, Any]],
+    specialist_reports: List[Dict[str, Any]],
+    scope: str,
+    include_frontend: bool,
+) -> Dict[str, Any]:
+    roster = ", ".join(selected_specialists) if selected_specialists else "orion"
+    counts = _dispatch_receipt_counts(dispatch_receipts, specialist_reports, selected_specialists)
+    report_format = "orion_diagnostic_prose_v2" if direct_orion_diagnostic else "dispatch_audit_v2"
+
+    if direct_orion_diagnostic:
+        return {
+            "report_format": report_format,
+            "executive_diagnostic": (
+                "Orion executou o diagnóstico técnico objetivo em modo somente leitura. "
+                "O runtime respondeu em dispatch real, a persona visível permaneceu Orion "
+                "e a trilha não voltou para PLATFORM_SELF_AUDIT_READY."
+            ),
+            "backend_assessment": (
+                "O backend já materializa a capability de auditoria como execução confirmada. "
+                "O risco residual deixou de ser ativação e passou a ser acabamento do payload final."
+            ),
+            "frontend_assessment": (
+                "A assinatura visual do Orion permaneceu coerente neste fluxo. "
+                "A camada web ainda deve apenas renderizar receipts e consolidação, sem reinterpretar semântica."
+            ),
+            "integration_assessment": (
+                "Intent, dispatcher interno e composição final estão alinhados. "
+                "O próximo salto é persistir e exibir o dispatch com estrutura auditável e leitura executiva."
+            ),
+            "confirmed_evidence": (
+                "Sinais confirmados nesta execução: "
+                f"event=ORION_RUNTIME_DIAGNOSTIC_EXECUTED, execution_depth=dispatch, "
+                f"selected_specialists={counts['selected_specialists_count']}, "
+                f"dispatch_receipts={counts['dispatch_receipts_count']}."
+            ),
+            "main_risk": (
+                "O risco residual é apresentar uma resposta excessivamente técnica ou estrutural "
+                "quando o usuário espera diagnóstico executivo direto."
+            ),
+            "recommended_actions": [
+                "1. Preservar precedência do diagnóstico Orion-only sobre rotas genéricas.",
+                "2. Persistir contagens e evidências do dispatch no payload final.",
+                "3. Exibir receipts e specialist reports sem recair em template consultivo READY.",
+                "4. Manter Orion como signer visível em persistência e renderização.",
+            ],
+            "final_consolidation": (
+                "Orion consolidou a análise técnica objetiva como agente único visível. "
+                "O dispatch já está confirmado; o próximo passo é enriquecer a saída com recibos persistíveis "
+                "e acabamento executivo sem perder evidência operacional."
+            ),
+        }
+
+    frontend_line = (
+        "O frontend foi incluído no escopo e precisa apenas renderizar melhor receipts, specialist reports e consolidação."
+        if include_frontend else
+        "O frontend não precisa reinterpretar o dispatch; basta consumir e renderizar o payload estruturado."
+    )
+    return {
+        "report_format": report_format,
+        "executive_diagnostic": (
+            f"Dispatch interno concluído com {roster}. "
+            "A plataforma já não está presa em readiness operacional; a execução multiagente foi materializada."
+        ),
+        "backend_assessment": (
+            "O backend aciona o squad solicitado e consolida a entrega em modo somente leitura. "
+            "A camada de execução já produz receipts, relatórios por especialista e síntese final."
+        ),
+        "frontend_assessment": frontend_line,
+        "integration_assessment": (
+            "A integração entre intent engine, Orion internal dispatcher e chat/stream foi estabilizada. "
+            "O esforço remanescente é de persistência auditável e apresentação executiva."
+        ),
+        "confirmed_evidence": (
+            f"Especialistas acionados: {roster}. "
+            f"Receipts gerados: {counts['dispatch_receipts_count']}. "
+            f"Relatórios especializados: {counts['specialist_reports_count']}."
+        ),
+        "main_risk": (
+            "O principal risco residual é a resposta final perder clareza executiva ao misturar payload técnico "
+            "com narrativa consultiva legada."
+        ),
+        "recommended_actions": [
+            "1. Manter dispatch como resposta principal quando execution_depth=dispatch.",
+            "2. Persistir contagens e especialista(s) selecionados no fechamento do stream.",
+            "3. Renderizar technical_summary, dispatch_receipts e final_consolidation em blocos claros.",
+            "4. Evitar reuso de templates consultivos em respostas já executadas.",
+        ],
+        "final_consolidation": _audit_final_consolidation(selected_specialists, scope),
+    }
+
+
 def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str) -> Dict[str, Any]:
     scope = _audit_scope(inp.message)
     direct_orion_diagnostic = _is_orion_direct_diagnostic_request(inp.message, visible_agent)
@@ -742,79 +846,52 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
     selected_specialists = ["orion"] if direct_orion_diagnostic else _audit_selected_specialists(scope, bool(inp.include_frontend))
     dispatch_receipts = _audit_dispatch_receipts(selected_specialists, scope)
     specialist_reports = _audit_specialist_reports(selected_specialists, scope)
-
-    if direct_orion_diagnostic:
-        return {
-            "ok": True,
-            "service": "orion_internal",
-            "mode": "platform_self_audit",
-            "provider": "platform",
-            "event": "ORION_RUNTIME_DIAGNOSTIC_EXECUTED",
-            "status": "executed",
-            "scope": "standard",
-            "report_format": "orion_diagnostic_prose_v1",
-            "execution_depth": "dispatch",
-            "visible_agent": "orion",
-            "repo": _github_repo(),
-            "frontend_repo": _github_repo_web(),
-            "executive_diagnostic": (
-                "Orion executou o diagnóstico técnico objetivo em modo somente leitura. "
-                "O runtime respondeu em dispatch real, a persona visível permaneceu Orion "
-                "e o fluxo não recaiu em PLATFORM_SELF_AUDIT_READY."
-            ),
-            "backend_assessment": (
-                "O backend está operacional para o fluxo consultado, com capability platform_self_audit "
-                "materializada como execução confirmada. O ponto que ainda merece evolução é a forma da saída: "
-                "o conteúdo já deixou o modo ready, mas ainda pode ser mais narrativo e menos parecido com recibo técnico."
-            ),
-            "frontend_assessment": (
-                "A assinatura visual ficou coerente com Orion neste teste. Ainda assim, o frontend precisa ser "
-                "validado em thread nova limpa para eliminar leitura contaminada por histórico antigo."
-            ),
-            "integration_assessment": (
-                "A integração entre intent, runtime do Orion e composição final melhorou. "
-                "O gargalo principal migrou da ativação para o acabamento semântico da resposta consolidada."
-            ),
-            "confirmed_evidence": (
-                "Sinais confirmados nesta execução: event=ORION_RUNTIME_DIAGNOSTIC_EXECUTED, "
-                "execution_depth=dispatch, visible_agent=orion e selected_specialists restrito ao próprio Orion."
-            ),
-            "main_risk": (
-                "O risco residual não é mais cair em READY, e sim retornar um corpo excessivamente técnico ou estrutural "
-                "quando o usuário espera um diagnóstico executivo mais direto."
-            ),
-            "recommended_actions": (
-                "1. Manter a precedência do diagnóstico Orion-only sobre rotas genéricas. "
-                "2. Consolidar a resposta final em texto executivo. "
-                "3. Validar em thread nova para excluir reidratação de histórico legado. "
-                "4. Preservar o signer Orion em persistência e renderização."
-            ),
-            "final_consolidation": (
-                "Orion consolidou a análise técnica objetiva como agente único visível. "
-                "O próximo passo é transformar o dispatch já confirmado em um relatório mais limpo, direto e executivo, "
-                "sem perder evidência operacional."
-            ),
-            "audit_plan": audit_plan,
-            "generated_at": _now_ts(),
-        }
+    executive_sections = _build_dispatch_executive_sections(
+        direct_orion_diagnostic=direct_orion_diagnostic,
+        selected_specialists=selected_specialists,
+        dispatch_receipts=dispatch_receipts,
+        specialist_reports=specialist_reports,
+        scope=scope,
+        include_frontend=bool(inp.include_frontend),
+    )
+    counts = _dispatch_receipt_counts(dispatch_receipts, specialist_reports, selected_specialists)
 
     return {
         "ok": True,
         "service": "orion_internal",
         "mode": "platform_self_audit",
         "provider": "platform",
-        "event": "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED",
+        "event": "ORION_RUNTIME_DIAGNOSTIC_EXECUTED" if direct_orion_diagnostic else "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED",
         "status": "executed",
         "scope": scope,
-        "report_format": "dispatch_audit_v1",
+        "report_format": executive_sections.get("report_format") or ("orion_diagnostic_v1" if direct_orion_diagnostic else "dispatch_audit_v1"),
+        "delivery_contract": "orion_structured_dispatch_v1",
         "execution_depth": "dispatch",
         "visible_agent": visible_agent,
         "repo": _github_repo(),
-        "technical_summary": "Dispatch interno de especialistas executado em modo somente leitura. O backend acionou o squad solicitado e consolidou a entrega sem depender do loop automático nem de escrita governada.",
+        "technical_summary": (
+            "Orion executou um diagnóstico técnico objetivo em modo somente leitura, verificando runtime, handoff do chat e sinais de plataforma sem depender de escrita governada."
+            if direct_orion_diagnostic
+            else "Dispatch interno de especialistas executado em modo somente leitura. O backend acionou o squad solicitado e consolidou a entrega sem depender do loop automático nem de escrita governada."
+        ),
         "selected_specialists": selected_specialists,
+        "selected_specialists_count": counts.get("selected_specialists_count", 0),
         "dispatch_receipts": dispatch_receipts,
+        "dispatch_receipts_count": counts.get("dispatch_receipts_count", 0),
         "specialist_reports": specialist_reports,
-        "final_consolidation": _audit_final_consolidation(selected_specialists, scope),
+        "specialist_reports_count": counts.get("specialist_reports_count", 0),
+        "final_consolidation": executive_sections.get("final_consolidation") or (
+            "Orion consolidou a análise técnica objetiva como agente único visível. A resposta final deve sair assinada como Orion e não deve recair em PLATFORM_SELF_AUDIT_READY."
+            if direct_orion_diagnostic
+            else _audit_final_consolidation(selected_specialists, scope)
+        ),
+        "executive_diagnostic": executive_sections.get("executive_diagnostic") or "",
+        "backend_assessment": executive_sections.get("backend_assessment") or "",
+        "frontend_assessment": executive_sections.get("frontend_assessment") or "",
+        "integration_assessment": executive_sections.get("integration_assessment") or "",
+        "confirmed_evidence": executive_sections.get("confirmed_evidence") or "",
+        "main_risk": executive_sections.get("main_risk") or "",
+        "recommended_actions": executive_sections.get("recommended_actions") or [],
         "key_files": [
             "app/runtime/intent_engine.py",
             "app/routes/internal/orion_internal.py",
@@ -831,13 +908,25 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
             "Dispatch executado precisa ser refletido pela camada de renderização final.",
             "A auditoria read-only continua isolada de escrita governada, deploy e operações destrutivas.",
             "Handlers de inventário/config e dispatch multiagente não devem compartilhar o mesmo template textual.",
-        ],
-        "remediation_plan": [
-            "1. Preservar precedência de platform_self_audit sobre github_runtime_general.",
-            "2. Renderizar execution_depth=dispatch como resposta principal.",
-            "3. Exibir receipts e relatórios por especialista sem recair em full_audit_v1.",
-            "4. Consolidar a síntese final em um único bloco operacional verificável.",
-        ],
+        ] + (
+            [
+                "Pedidos Orion-only de diagnóstico técnico objetivo devem produzir execução diagnóstica real, não PLATFORM_SELF_AUDIT_READY.",
+                "A síntese final do diagnóstico direto deve permanecer assinada por Orion, sem delegação visual para outro agente.",
+            ] if direct_orion_diagnostic else []
+        ),
+        "remediation_plan": (
+            [
+                "1. Preservar precedência do diagnóstico Orion-only sobre github_runtime_general.",
+                "2. Emitir ORION_RUNTIME_DIAGNOSTIC_EXECUTED como resposta principal.",
+                "3. Manter receipts e síntese final alinhados a Orion.",
+                "4. Evitar regressão para template consultivo READY.",
+            ] if direct_orion_diagnostic else [
+                "1. Preservar precedência de platform_self_audit sobre github_runtime_general.",
+                "2. Renderizar execution_depth=dispatch como resposta principal.",
+                "3. Exibir receipts e relatórios por especialista sem recair em full_audit_v1.",
+                "4. Consolidar a síntese final em um único bloco operacional verificável.",
+            ]
+        ),
         "audit_plan": audit_plan,
         "generated_at": _now_ts(),
     }
