@@ -7808,19 +7808,82 @@ def _extract_github_batch_update_request(user_text: str) -> Optional[Dict[str, A
 def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     if not result:
         return "Ação processada."
-    if not result.get("success"):
-        msg = (result.get("message") or "Não foi possível concluir a ação solicitada.").strip()
-        return msg
 
     provider = (result.get("provider") or "provider").strip()
     repo = (result.get("repo") or "").strip()
     backend_repo = (result.get("backend_repo") or "").strip()
     frontend_repo = (result.get("frontend_repo") or "").strip()
-    branch = (result.get("branch") or "").strip()
+    branch = (result.get("branch") or result.get("branch_name") or "").strip()
     path = (result.get("path") or "").strip()
     commit_sha = (result.get("commit_sha") or "").strip()
     event = (result.get("event") or "").strip()
     mode = (result.get("mode") or "").strip()
+    base_branch = (result.get("base_branch") or "").strip()
+    resolution = str(result.get("resolution") or "").strip()
+    github_error = str(result.get("github_error") or "").strip()
+    pr_num = int(result.get("pull_request_number") or result.get("pr_number") or 0)
+    pr_found = result.get("pr_found")
+    compare_ok = result.get("compare_ok")
+    merge_executed = result.get("merge_executed")
+    deploy_executed = result.get("deploy_executed")
+    repository_details = result.get("repository_details") if isinstance(result.get("repository_details"), list) else None
+
+    github_compare_not_found = (
+        event.startswith("GITHUB_COMPARE_STATUS")
+        or mode == "github_compare_status"
+        or resolution == "pull_request_not_found"
+        or github_error == "pull_request_not_found"
+        or pr_found is False
+    )
+    if github_compare_not_found and (
+        resolution == "pull_request_not_found"
+        or github_error == "pull_request_not_found"
+        or pr_found is False
+    ):
+        parts = ["Ação executada com confirmação operacional verificável."]
+        if event:
+            parts.append(f"event: {event}")
+        elif mode:
+            parts.append(f"mode: {mode}")
+        if provider:
+            parts.append(f"provider: {provider}")
+        if repo:
+            parts.append(f"repo: {repo}")
+        if backend_repo:
+            parts.append(f"backend_repo: {backend_repo}")
+        if frontend_repo:
+            parts.append(f"frontend_repo: {frontend_repo}")
+        if branch:
+            parts.append(f"branch: {branch}")
+        if base_branch:
+            parts.append(f"base_branch: {base_branch}")
+        if repository_details:
+            parts.append("repository_details:")
+            for item in repository_details[:10]:
+                if not isinstance(item, dict):
+                    continue
+                parts.append(
+                    f"- {str(item.get('kind') or 'repo')}: {str(item.get('repo') or '').strip()} "
+                    f"(branch={str(item.get('branch') or '').strip() or 'main'})"
+                )
+        if pr_num:
+            parts.append(f"pr_number: {pr_num}")
+        parts.append(f"pr_found: {bool(pr_found)}")
+        if compare_ok is not None:
+            parts.append(f"compare_ok: {bool(compare_ok)}")
+        if merge_executed is not None:
+            parts.append(f"merge_executed: {bool(merge_executed)}")
+        if deploy_executed is not None:
+            parts.append(f"deploy_executed: {bool(deploy_executed)}")
+        if resolution:
+            parts.append(f"resolution: {resolution}")
+        if github_error:
+            parts.append(f"github_error: {github_error}")
+        return "\n".join([str(x).rstrip() for x in parts if str(x).strip()])
+
+    if not result.get("success"):
+        msg = (result.get("message") or "Não foi possível concluir a ação solicitada.").strip()
+        return msg
 
     parts = ["Ação executada com confirmação operacional verificável."]
     if event:
@@ -10042,6 +10105,9 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         "next_authorization_command",
         "source_audit_event",
         "source_audit_reference",
+        "resolution",
+        "github_error",
+        "branch_name",
     ]
     scalar_numeric_fields = [
         "selected_specialists_count",
@@ -10052,6 +10118,10 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         "total_entries",
         "count",
         "priority_score",
+        "pr_number",
+        "ahead_by",
+        "behind_by",
+        "files_count",
     ]
     scalar_passthrough_fields = [
         "compact_dispatch_details",
@@ -10062,6 +10132,10 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         "pr_required",
         "human_approval_required",
         "approval_required_for_pr",
+        "compare_ok",
+        "pr_found",
+        "merge_executed",
+        "deploy_executed",
     ]
     list_fields = [
         "repositories",
@@ -10121,6 +10195,13 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
     if pull_request and pull_request.get("number"):
         normalized["pull_request_number"] = int(pull_request.get("number") or 0)
         normalized["pull_request_url"] = str(pull_request.get("url") or "").strip()
+    elif data.get("pr_number") is not None:
+        try:
+            normalized["pull_request_number"] = int(data.get("pr_number") or 0)
+        except Exception:
+            pass
+    if data.get("pr_url") is not None and str(data.get("pr_url") or "").strip():
+        normalized["pull_request_url"] = str(data.get("pr_url") or "").strip()
 
     if data.get("content") is not None:
         normalized["content"] = str(data.get("content") or "")
