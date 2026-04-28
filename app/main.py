@@ -15791,7 +15791,7 @@ async def chat_stream(
                             agent_id=ag_id,
                             agent_name=ag_name,
                             started_monotonic=agent_started_monotonic,
-                            detail=str(execution_result.get("message") or "A solicitação foi tratada pelo runtime operacional."),
+                            detail=str(_build_execution_result_payload(execution_result) or execution_result.get("message") or "A solicitação foi tratada pelo runtime operacional."),
                             provider=execution_result.get("provider"),
                         )
                     except Exception:
