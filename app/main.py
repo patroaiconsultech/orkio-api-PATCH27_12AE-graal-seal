@@ -9873,6 +9873,162 @@ def _looks_like_external_execution_claim(answer: str) -> bool:
         return False
     return any(re.search(p, txt, flags=re.IGNORECASE | re.DOTALL) for p in _EXECUTION_CLAIM_PATTERNS)
 
+
+def _trim_dispatch_text(value: Any, *, limit: int = 1200) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+def _compact_dispatch_receipts(items: Any, *, limit: int = 20) -> List[Dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in items[:limit]:
+        if isinstance(item, dict):
+            out.append({
+                "agent": _trim_dispatch_text(item.get("agent"), limit=80),
+                "status": _trim_dispatch_text(item.get("status"), limit=40),
+                "mode": _trim_dispatch_text(item.get("mode"), limit=80),
+                "deliverable": _trim_dispatch_text(item.get("deliverable"), limit=240),
+            })
+        else:
+            out.append({"agent": _trim_dispatch_text(item, limit=120)})
+    return out
+
+def _compact_specialist_reports(items: Any, *, limit: int = 12) -> List[Dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in items[:limit]:
+        if not isinstance(item, dict):
+            out.append({"agent": _trim_dispatch_text(item, limit=120)})
+            continue
+        findings = item.get("findings") if isinstance(item.get("findings"), list) else []
+        next_actions = item.get("next_actions") if isinstance(item.get("next_actions"), list) else []
+        out.append({
+            "agent": _trim_dispatch_text(item.get("agent"), limit=80),
+            "role": _trim_dispatch_text(item.get("role"), limit=80),
+            "focus": _trim_dispatch_text(item.get("focus"), limit=240),
+            "findings": [_trim_dispatch_text(x, limit=220) for x in findings[:6]],
+            "next_actions": [_trim_dispatch_text(x, limit=220) for x in next_actions[:6]],
+        })
+    return out
+
+def _build_dispatch_audit_envelope(
+    *,
+    execution_result: Optional[Dict[str, Any]],
+    trace_id: str,
+    thread_id: str,
+    message_id: str,
+    message_created_at: int,
+    client_message_id: Optional[str],
+    final_signer_agent_id: Optional[str],
+    final_signer_agent_name: Optional[str],
+    selected_agent_id: Optional[str],
+    selected_agent_name: Optional[str],
+) -> Dict[str, Any]:
+    result = execution_result if isinstance(execution_result, dict) else {}
+    if not result or not result.get("handled"):
+        return {}
+
+    execution_data = result.get("execution_result") if isinstance(result.get("execution_result"), dict) else result
+    event = _trim_dispatch_text(execution_data.get("event"), limit=120)
+    execution_depth = _trim_dispatch_text(execution_data.get("execution_depth"), limit=40).lower()
+    delivery_contract = _trim_dispatch_text(execution_data.get("delivery_contract"), limit=120)
+    report_format = _trim_dispatch_text(execution_data.get("report_format"), limit=120)
+
+    is_dispatch = bool(
+        event in {"ORION_RUNTIME_DIAGNOSTIC_EXECUTED", "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED"}
+        or execution_depth == "dispatch"
+        or delivery_contract == "orion_structured_dispatch_v1"
+    )
+    if not is_dispatch:
+        return {}
+
+    selected_specialists = execution_data.get("selected_specialists") if isinstance(execution_data.get("selected_specialists"), list) else []
+    recommended_actions = execution_data.get("recommended_actions") if isinstance(execution_data.get("recommended_actions"), list) else []
+
+    envelope: Dict[str, Any] = {
+        "patch_sentinel": PATCH_SENTINEL,
+        "build_fingerprint": _safe_build_fingerprint(),
+        "audit_payload_version": _trim_dispatch_text(execution_data.get("audit_payload_version"), limit=120) or "dispatch_audit_envelope_v1",
+        "trace_id": trace_id,
+        "thread_id": thread_id,
+        "message_id": message_id,
+        "message_created_at": message_created_at,
+        "client_message_id": client_message_id,
+        "selected_agent_id": selected_agent_id,
+        "selected_agent_name": selected_agent_name,
+        "final_signer_agent_id": final_signer_agent_id,
+        "final_signer_agent_name": final_signer_agent_name,
+        "event": event,
+        "provider": _trim_dispatch_text(execution_data.get("provider"), limit=80),
+        "execution_depth": execution_depth,
+        "report_format": report_format,
+        "delivery_contract": delivery_contract,
+        "execution_mode": _trim_dispatch_text(execution_data.get("execution_mode"), limit=80) or "read_only_dispatch",
+        "founder_control_mode": _trim_dispatch_text(execution_data.get("founder_control_mode"), limit=120) or "human_controlled_runtime_only",
+        "auditability_status": _trim_dispatch_text(execution_data.get("auditability_status"), limit=120) or "ready_for_persistence",
+        "selected_specialists": [_trim_dispatch_text(x, limit=80) for x in selected_specialists[:12]],
+        "selected_specialists_count": int(execution_data.get("selected_specialists_count") or len(selected_specialists or [])),
+        "dispatch_receipts_count": int(execution_data.get("dispatch_receipts_count") or len(execution_data.get("dispatch_receipts") or [])),
+        "specialist_reports_count": int(execution_data.get("specialist_reports_count") or len(execution_data.get("specialist_reports") or [])),
+        "technical_summary": _trim_dispatch_text(execution_data.get("technical_summary"), limit=1200),
+        "executive_diagnostic": _trim_dispatch_text(execution_data.get("executive_diagnostic"), limit=1200),
+        "backend_assessment": _trim_dispatch_text(execution_data.get("backend_assessment"), limit=1200),
+        "frontend_assessment": _trim_dispatch_text(execution_data.get("frontend_assessment"), limit=1200),
+        "integration_assessment": _trim_dispatch_text(execution_data.get("integration_assessment"), limit=1200),
+        "confirmed_evidence": _trim_dispatch_text(execution_data.get("confirmed_evidence"), limit=1200),
+        "main_risk": _trim_dispatch_text(execution_data.get("main_risk"), limit=1200),
+        "recommended_actions": [_trim_dispatch_text(x, limit=240) for x in recommended_actions[:10]],
+        "dispatch_receipts": _compact_dispatch_receipts(execution_data.get("dispatch_receipts")),
+        "specialist_reports": _compact_specialist_reports(execution_data.get("specialist_reports")),
+        "final_consolidation": _trim_dispatch_text(execution_data.get("final_consolidation"), limit=1600),
+        "persisted_at": now_ts(),
+    }
+    persistable_sections = execution_data.get("persistable_sections") if isinstance(execution_data.get("persistable_sections"), list) else []
+    if persistable_sections:
+        envelope["persistable_sections"] = [_trim_dispatch_text(x, limit=80) for x in persistable_sections[:20]]
+    return envelope
+
+def _persist_dispatch_audit_log(
+    db: Session,
+    *,
+    org: str,
+    user_id: Optional[str],
+    trace_id: str,
+    envelope: Optional[Dict[str, Any]],
+    path: str = "/api/chat/stream",
+) -> str:
+    if not isinstance(envelope, dict) or not envelope:
+        return ""
+    try:
+        entry = AuditLog(
+            id=new_id(),
+            org_slug=org,
+            user_id=user_id,
+            action="chat.dispatch.audit",
+            meta=json.dumps(envelope, ensure_ascii=False),
+            request_id=trace_id,
+            path=path,
+            status_code=200,
+            latency_ms=None,
+            created_at=now_ts(),
+        )
+        db.add(entry)
+        db.commit()
+        return str(getattr(entry, "id", "") or "")
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return ""
+
+
 def _apply_truthful_execution_mode(answer: str, execution_result: Optional[Dict[str, Any]] = None) -> str:
     """
     Prevent the model from affirming external side effects without execution evidence.
@@ -14610,6 +14766,9 @@ async def chat_stream(
                     "execution_provider": (execution_result or {}).get("provider"),
                     "report_format": (execution_result or {}).get("report_format"),
                     "delivery_contract": (execution_result or {}).get("delivery_contract"),
+                    "audit_payload_version": (execution_result or {}).get("audit_payload_version"),
+                    "execution_mode": (execution_result or {}).get("execution_mode"),
+                    "founder_control_mode": (execution_result or {}).get("founder_control_mode"),
                     "selected_specialists_count": (execution_result or {}).get("selected_specialists_count"),
                     "dispatch_receipts_count": (execution_result or {}).get("dispatch_receipts_count"),
                     "specialist_reports_count": (execution_result or {}).get("specialist_reports_count"),
@@ -14752,6 +14911,67 @@ async def chat_stream(
                                 db.rollback()
                             except Exception:
                                 pass
+
+                        dispatch_audit_envelope: Dict[str, Any] = {}
+                        dispatch_audit_log_id = ""
+                        try:
+                            dispatch_audit_envelope = _build_dispatch_audit_envelope(
+                                execution_result=execution_result,
+                                trace_id=trace_id,
+                                thread_id=tid,
+                                message_id=m_ass_id,
+                                message_created_at=m_ass_created_at,
+                                client_message_id=client_message_id,
+                                final_signer_agent_id=final_signer_agent_id,
+                                final_signer_agent_name=final_signer_agent_name,
+                                selected_agent_id=ag_id,
+                                selected_agent_name=ag_name,
+                            )
+                            if dispatch_audit_envelope:
+                                dispatch_audit_log_id = _persist_dispatch_audit_log(
+                                    db,
+                                    org=org,
+                                    user_id=uid,
+                                    trace_id=trace_id,
+                                    envelope=dispatch_audit_envelope,
+                                    path="/api/chat/stream",
+                                )
+                        except Exception:
+                            try:
+                                db.rollback()
+                            except Exception:
+                                pass
+                            dispatch_audit_envelope = {}
+                            dispatch_audit_log_id = ""
+
+                        try:
+                            _assistant_answer_debug["dispatch_audit_persisted"] = bool(dispatch_audit_log_id)
+                            if dispatch_audit_log_id:
+                                _assistant_answer_debug["dispatch_audit_log_id"] = dispatch_audit_log_id
+                            if dispatch_audit_envelope:
+                                _assistant_answer_debug["audit_payload_version"] = dispatch_audit_envelope.get("audit_payload_version")
+                                _assistant_answer_debug["execution_mode"] = dispatch_audit_envelope.get("execution_mode")
+                                _assistant_answer_debug["founder_control_mode"] = dispatch_audit_envelope.get("founder_control_mode")
+                        except Exception:
+                            pass
+
+                        if dispatch_audit_log_id:
+                            try:
+                                yield sse_execution(
+                                    "dispatch_audit_persisted",
+                                    "Trilha auditável do dispatch persistida",
+                                    kind="system",
+                                    scope="agent",
+                                    agent_id=final_signer_agent_id,
+                                    agent_name=final_signer_agent_name,
+                                    started_monotonic=agent_started_monotonic,
+                                    detail="Receipts, relatórios e consolidação executiva foram persistidos no audit log.",
+                                    dispatch_audit_log_id=dispatch_audit_log_id,
+                                    delivery_contract=(dispatch_audit_envelope.get("delivery_contract") if isinstance(dispatch_audit_envelope, dict) else None),
+                                    report_format=(dispatch_audit_envelope.get("report_format") if isinstance(dispatch_audit_envelope, dict) else None),
+                                )
+                            except Exception:
+                                return
                     except Exception:
                         # tracking failure should not break stream, but must rollback to keep Session usable
                         try:
@@ -14874,6 +15094,21 @@ async def chat_stream(
                 runtime_hints_block["started_at"] = _stream_started_at
                 runtime_hints_block["finished_at"] = now_ts()
                 runtime_hints_block["agent_count"] = len(list(_stream_executed_nodes or []))
+                try:
+                    if isinstance(_assistant_answer_debug, dict) and _assistant_answer_debug.get("dispatch_audit_persisted"):
+                        runtime_hints_block["dispatch_summary"] = {
+                            "event": _assistant_answer_debug.get("execution_event"),
+                            "provider": _assistant_answer_debug.get("execution_provider"),
+                            "report_format": _assistant_answer_debug.get("report_format"),
+                            "delivery_contract": _assistant_answer_debug.get("delivery_contract"),
+                            "audit_payload_version": _assistant_answer_debug.get("audit_payload_version"),
+                            "dispatch_audit_log_id": _assistant_answer_debug.get("dispatch_audit_log_id"),
+                            "selected_specialists_count": _assistant_answer_debug.get("selected_specialists_count"),
+                            "dispatch_receipts_count": _assistant_answer_debug.get("dispatch_receipts_count"),
+                            "specialist_reports_count": _assistant_answer_debug.get("specialist_reports_count"),
+                        }
+                except Exception:
+                    pass
                 final_runtime_enrichment["runtime_hints"] = runtime_hints_block
             except Exception:
                 final_runtime_enrichment = runtime_enrichment if isinstance(runtime_enrichment, dict) else {}
@@ -14922,6 +15157,12 @@ async def chat_stream(
                     payload["diagnostics"] = {**dict(_stream_done_debug), "patch_sentinel": PATCH_SENTINEL, "build_fingerprint": _safe_build_fingerprint()}
                 if final_runtime_enrichment and final_runtime_enrichment.get("runtime_hints"):
                     payload["runtime_hints"] = final_runtime_enrichment.get("runtime_hints")
+                    try:
+                        dispatch_summary = (final_runtime_enrichment.get("runtime_hints") or {}).get("dispatch_summary")
+                        if isinstance(dispatch_summary, dict) and dispatch_summary:
+                            payload["dispatch_summary"] = dispatch_summary
+                    except Exception:
+                        pass
                 yield sse_execution(
                     "stream_completed",
                     "Execução concluída",
