@@ -12,6 +12,51 @@ def _contains_any(text: str, terms: list[str]) -> bool:
     return any(_normalize(term) in txt for term in terms if term)
 
 
+def _context_has_sticky_dispatch(context: Optional[Dict[str, Any]]) -> bool:
+    ctx = context or {}
+    if not isinstance(ctx, dict):
+        return False
+    if not bool(ctx.get("sticky_dispatch_active")):
+        return False
+    delivery_contract = str(ctx.get("sticky_delivery_contract") or "").strip().lower()
+    dispatch_event = str(ctx.get("sticky_dispatch_event") or "").strip().upper()
+    return bool(
+        delivery_contract == "orion_structured_dispatch_v1"
+        or dispatch_event in {"ORION_RUNTIME_DIAGNOSTIC_EXECUTED", "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED"}
+    )
+
+
+def _looks_like_sticky_dispatch_followup(text: str) -> bool:
+    txt = _normalize(text)
+    if not txt or len(txt) > 600:
+        return False
+    patterns = [
+        "continue",
+        "prossiga",
+        "aprofunde",
+        "desdobre",
+        "expanda",
+        "refine",
+        "causas raiz",
+        "riscos estruturais",
+        "próximos passos",
+        "proximos passos",
+        "evidências técnicas",
+        "evidencias tecnicas",
+        "formato executivo",
+        "diagnóstico executivo",
+        "diagnostico executivo",
+        "sem perder evidências",
+        "sem perder evidencias",
+        "executive_diagnostic",
+        "technical_summary",
+        "final_consolidation",
+        "dispatch_receipts",
+        "specialist_reports",
+    ]
+    return any(term in txt for term in patterns)
+
+
 # =========================
 # GitHub Runtime Detection
 # =========================
@@ -360,6 +405,36 @@ def build_intent_package(
     context = context or {}
 
     runtime_op = _detect_runtime_operation(text)
+    if (not runtime_op.get("kind")) and _context_has_sticky_dispatch(context) and _looks_like_sticky_dispatch_followup(text):
+        runtime_op = {
+            "kind": "platform_audit",
+            "target_agent": "orion",
+            "mode": "execute",
+            "audit_mode": "specialist",
+            "prepare_only": False,
+            "execution_depth": "dispatch",
+            "visible_only_agent": "orion",
+            "response_profile": "orion_objective_diagnostic",
+            "delivery_contract": "orion_structured_dispatch_v1",
+            "structured_output": True,
+            "dispatch_receipts_expected": True,
+            "specialist_reports_expected": True,
+            "final_consolidation_expected": True,
+            "auditability_expected": True,
+            "execution_audit_expected": True,
+            "persist_execution_audit": True,
+            "contract_inherited_from_thread": True,
+            "sticky_dispatch_followup": True,
+            "sticky_dispatch_event": str((context or {}).get("sticky_dispatch_event") or "").strip(),
+            "requested_specialists": list((context or {}).get("sticky_selected_specialists") or []),
+        }
+    elif runtime_op.get("kind") == "platform_audit" and _context_has_sticky_dispatch(context):
+        runtime_op["contract_inherited_from_thread"] = bool(runtime_op.get("contract_inherited_from_thread") or _looks_like_sticky_dispatch_followup(text))
+        if runtime_op.get("contract_inherited_from_thread"):
+            runtime_op["sticky_dispatch_followup"] = True
+            runtime_op["sticky_dispatch_event"] = str((context or {}).get("sticky_dispatch_event") or "").strip()
+            runtime_op["delivery_contract"] = runtime_op.get("delivery_contract") or "orion_structured_dispatch_v1"
+            runtime_op["persist_execution_audit"] = True
     intent = runtime_op.get("kind") or "general_guidance"
 
     recommended_agents = ["orkio"]
@@ -438,4 +513,6 @@ def build_intent_package(
         "followup_mode": (
             "execution_receipt" if runtime_op.get("kind") else "light_checkin"
         ),
+        "contract_inherited_from_thread": bool(runtime_op.get("contract_inherited_from_thread")),
+        "sticky_dispatch_followup": bool(runtime_op.get("sticky_dispatch_followup")),
     }
