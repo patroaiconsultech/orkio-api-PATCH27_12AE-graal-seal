@@ -13604,6 +13604,11 @@ async def chat_stream(
     _stream_executed_nodes: List[str] = []
     _stream_started_at = now_ts()
     _stream_started_monotonic = time.monotonic()
+    _stream_final_text = ""
+    _stream_final_agent_id = None
+    _stream_final_agent_name = None
+    _stream_final_voice_id = None
+    _stream_final_avatar_url = None
 
     def _stream_elapsed_ms(started_monotonic: Optional[float] = None) -> int:
         base_started = started_monotonic if started_monotonic is not None else _stream_started_monotonic
@@ -14231,12 +14236,16 @@ async def chat_stream(
                         yield sse_event(
                             "chunk",
                             {
-                                "agent_id": ag_id,
-                                "agent_name": ag_name,
+                                "agent_id": final_signer_agent_id,
+                                "agent_name": final_signer_agent_name,
+                                "executor_agent_id": ag_id,
+                                "executor_agent_name": ag_name,
                                 "content": chunk,
                                 "delta": chunk,
                                 "thread_id": tid,
                                 "trace_id": trace_id,
+                                "voice_id": final_signer_voice_id,
+                                "avatar_url": final_signer_avatar_url,
                             },
                         )
                     except Exception:
@@ -14250,7 +14259,20 @@ async def chat_stream(
                     pass
 
                 try:
-                    yield sse_event("agent_done", {"done": True, "agent_id": ag_id, "agent_name": ag_name, "thread_id": tid, "trace_id": trace_id})
+                    yield sse_event(
+                        "agent_done",
+                        {
+                            "done": True,
+                            "agent_id": final_signer_agent_id,
+                            "agent_name": final_signer_agent_name,
+                            "executor_agent_id": ag_id,
+                            "executor_agent_name": ag_name,
+                            "thread_id": tid,
+                            "trace_id": trace_id,
+                            "voice_id": final_signer_voice_id,
+                            "avatar_url": final_signer_avatar_url,
+                        },
+                    )
                     yield sse_execution(
                         "agent_completed",
                         f"{ag_name} concluiu a etapa",
@@ -14273,6 +14295,11 @@ async def chat_stream(
                     pass
 
                 previous_agent_payload = {"id": final_signer_agent_id, "name": final_signer_agent_name}
+                _stream_final_text = ans
+                _stream_final_agent_id = final_signer_agent_id
+                _stream_final_agent_name = final_signer_agent_name
+                _stream_final_voice_id = final_signer_voice_id
+                _stream_final_avatar_url = final_signer_avatar_url
 
             final_runtime_enrichment = runtime_enrichment if isinstance(runtime_enrichment, dict) else {}
             try:
@@ -14318,7 +14345,16 @@ async def chat_stream(
 
             # done global
             try:
-                payload = {"done": True, "thread_id": tid, "trace_id": trace_id}
+                payload = {
+                    "done": True,
+                    "thread_id": tid,
+                    "trace_id": trace_id,
+                    "final_text": _stream_final_text,
+                    "agent_id": _stream_final_agent_id,
+                    "agent_name": _stream_final_agent_name,
+                    "voice_id": _stream_final_voice_id,
+                    "avatar_url": _stream_final_avatar_url,
+                }
                 if final_runtime_enrichment and final_runtime_enrichment.get("runtime_hints"):
                     payload["runtime_hints"] = final_runtime_enrichment.get("runtime_hints")
                 yield sse_execution(
