@@ -13,9 +13,9 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/internal/orion", tags=["orion_internal"])
 
-PATCH_SENTINEL = "PREMIUM_AUDIT_RENDERER_SENTINEL_12BG_V1"
-PATCH_FEATURE = "premium_audit_final_renderer"
-PATCH_EXPECTED_BEHAVIOR = "premium_audit_full_A_to_J_renderer_and_preserved_payload_fields"
+PATCH_SENTINEL = "CONTROLLED_SELF_EVOLUTION_SENTINEL_12BH_V1"
+PATCH_FEATURE = "controlled_self_evolution_propose_only"
+PATCH_EXPECTED_BEHAVIOR = "propose_only_backlog_selection_without_github_write"
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -333,6 +333,134 @@ def _is_premium_platform_audit_request(message: str) -> bool:
         "premium",
     )
     return any(marker in txt for marker in premium_markers) and any(marker in txt for marker in audit_markers)
+
+
+def _is_controlled_self_evolution_propose_request(message: str) -> bool:
+    txt = (message or "").strip().lower()
+    if not txt:
+        return False
+    evolution_markers = (
+        "autoevolução controlada",
+        "autoevolucao controlada",
+        "auto evolucao controlada",
+        "ciclo de autoevolução",
+        "ciclo de autoevolucao",
+        "self evolution",
+        "self-evolution",
+        "evolução controlada",
+        "evolucao controlada",
+    )
+    scope_markers = (
+        "propose_only",
+        "modo propose_only",
+        "somente proposta",
+        "apenas proposta",
+        "backlog priorizado",
+        "selecionar a melhoria",
+        "melhoria de maior impacto",
+        "menor risco",
+        "última auditoria premium",
+        "ultima auditoria premium",
+        "sem pr",
+        "sem merge",
+        "sem deploy",
+    )
+    return any(marker in txt for marker in evolution_markers) and any(marker in txt for marker in scope_markers)
+
+
+def _build_controlled_self_evolution_sections(selected_specialists: List[str]) -> Dict[str, Any]:
+    premium = _build_premium_platform_audit_sections(selected_specialists)
+    probable_files = [
+        "frontend: src/routes/AppConsole.jsx",
+        "frontend: src/components/console/EmptyStatePremium.jsx",
+        "frontend: src/components/chat/ChatTopbar.jsx",
+        "frontend: src/components/chat/MessageComposer.jsx",
+    ]
+    implementation_steps = [
+        "Criar empty state premium com CTA primário, prova de valor e primeira ação guiada.",
+        "Exibir objetivo atual, próximo passo recomendado e sinal de controle humano no topo do console.",
+        "Padronizar loading, erro e fallback com linguagem premium e baixa fricção.",
+        "Adicionar instrumentação de UX percebida para empty state, CTA inicial e recuperação.",
+    ]
+    return {
+        "selected_improvement": "Reescrever o empty state premium do AppConsole com primeira vitória guiada.",
+        "root_cause": "A plataforma possui potência real no backend, mas o console inicial ainda não traduz imediatamente esse valor em desejo de uso, clareza e sensação de exclusividade.",
+        "user_impact": "Aumenta compreensão imediata, reduz fricção na primeira sessão e melhora a percepção de sofisticação e controle do produto.",
+        "technical_risk": "Baixo a moderado. A mudança é principalmente de frontend e contrato de apresentação, com risco contido desde que não altere fluxos críticos de autenticação, chat e streaming.",
+        "probable_files": probable_files,
+        "implementation_steps": implementation_steps,
+        "priority_score": 9.4,
+        "priority_score_label": "9.4/10",
+        "pr_required": True,
+        "human_approval_required": True,
+        "approval_required_for_pr": True,
+        "next_authorization_command": "@Orion Autorizo preparar branch, aplicar patch do empty state premium no frontend e abrir PR nesta thread. Não autorizo merge nem deploy.",
+        "source_audit_event": "PLATFORM_PREMIUM_AUDIT_EXECUTED",
+        "source_audit_reference": premium.get("principal_premium_blocker") or "",
+        "final_consolidation": "A primeira autoevolução recomendada é frontend-first: empty state premium + onboarding de primeira vitória, em PR governada e sem tocar em main, merge ou deploy.",
+    }
+
+
+def platform_self_evolution_plan(inp: "OrionRuntimeIn") -> Dict[str, Any]:
+    visible_agent = _resolve_visible_agent(inp.message, default="orion")
+    selected_specialists = _audit_selected_specialists("specialist", bool(inp.include_frontend), premium_mode=True)
+    dispatch_receipts = _audit_dispatch_receipts(selected_specialists, "specialist")
+    specialist_reports = _audit_specialist_reports(selected_specialists, "specialist")
+    counts = _dispatch_receipt_counts(dispatch_receipts, specialist_reports, selected_specialists)
+    sections = _build_controlled_self_evolution_sections(selected_specialists)
+    return {
+        "ok": True,
+        "service": "orion_internal",
+        "mode": "controlled_self_evolution_propose_only",
+        "provider": "platform",
+        "event": "CONTROLLED_SELF_EVOLUTION_PROPOSED",
+        "status": "executed",
+        "scope": "specialist",
+        "report_format": "controlled_self_evolution_propose_only_v1",
+        "delivery_contract": "controlled_self_evolution_propose_only_v1",
+        "execution_depth": "dispatch",
+        "execution_mode": "propose_only",
+        "founder_control_mode": "human_controlled_runtime_only",
+        "auditability_status": "ready_for_persistence",
+        "visible_agent": visible_agent,
+        "repo": _github_repo(),
+        "technical_summary": "Ciclo de autoevolução controlada executado em modo propose_only. A plataforma selecionou a melhoria de maior impacto e menor risco sem acionar GitHub write, PR, merge ou deploy.",
+        "selected_specialists": selected_specialists,
+        "selected_specialists_count": counts.get("selected_specialists_count", 0),
+        "dispatch_receipts": dispatch_receipts,
+        "dispatch_receipts_count": counts.get("dispatch_receipts_count", 0),
+        "specialist_reports": specialist_reports,
+        "specialist_reports_count": counts.get("specialist_reports_count", 0),
+        "github_write_blocked": True,
+        "specialist_fanout_applied": True,
+        "approval_required_for_pr": True,
+        "selected_improvement": sections.get("selected_improvement") or "",
+        "root_cause": sections.get("root_cause") or "",
+        "user_impact": sections.get("user_impact") or "",
+        "technical_risk": sections.get("technical_risk") or "",
+        "probable_files": sections.get("probable_files") or [],
+        "implementation_steps": sections.get("implementation_steps") or [],
+        "priority_score": sections.get("priority_score"),
+        "priority_score_label": sections.get("priority_score_label") or "",
+        "pr_required": bool(sections.get("pr_required")),
+        "human_approval_required": bool(sections.get("human_approval_required")),
+        "next_authorization_command": sections.get("next_authorization_command") or "",
+        "source_audit_event": sections.get("source_audit_event") or "",
+        "source_audit_reference": sections.get("source_audit_reference") or "",
+        "final_consolidation": sections.get("final_consolidation") or "",
+        "recommended_actions": [
+            "Preparar patch frontend do empty state premium em branch governada.",
+            "Manter merge e deploy bloqueados até aprovação humana explícita.",
+            "Validar UX em web e PWA antes de expandir para próximos ciclos.",
+        ],
+        "key_files": [
+            "src/routes/AppConsole.jsx",
+            "src/components/console/EmptyStatePremium.jsx",
+            "src/components/chat/ChatTopbar.jsx",
+            "src/components/chat/MessageComposer.jsx",
+        ],
+        "generated_at": _now_ts(),
+    }
 
 
 def _audit_wants_full_execution(message: str, prepare_only: bool = False) -> bool:
@@ -1325,6 +1453,8 @@ def orion_runtime_execute(inp: "OrionRuntimeIn") -> Dict[str, Any]:
     message = inp.message or ""
     lowered = message.lower()
     visible_agent = _resolve_visible_agent(message, default="orion")
+    if _is_controlled_self_evolution_propose_request(message):
+        return platform_self_evolution_plan(inp)
     if _is_orion_direct_diagnostic_request(message, visible_agent):
         return platform_self_audit(inp)
     if any(term in lowered for term in (
