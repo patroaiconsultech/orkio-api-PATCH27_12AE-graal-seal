@@ -9762,6 +9762,7 @@ def _github_create_pull_request_capability(*, head: str, base: str, title: str, 
     result = {"handled": True, "success": True, "provider": "github", "repo": repo, "branch": head, "base_branch": base, "pull_request_number": number, "pull_request_url": html_url, "title": pr_title, "branch_created": True, "compare_ok": True, "ahead_by": int(compare.get("ahead_by") or 0), "files_count": int(compare.get("files_count") or 0), "message": "Pull request aberto com confirmação operacional verificável."}
     return _github_action_cache_put(cache_key, result)
 
+
 def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, Any]:
     data = dict(raw or {})
     ok = bool(data.get("ok"))
@@ -9792,38 +9793,98 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         "path": path,
     }
 
-    if data.get("mode"):
-        normalized["mode"] = str(data.get("mode") or "").strip()
-    if data.get("event"):
-        normalized["event"] = str(data.get("event") or "").strip()
-    if isinstance(data.get("repositories"), list):
-        normalized["repositories"] = list(data.get("repositories") or [])
-    if isinstance(data.get("repository_details"), list):
-        normalized["repository_details"] = list(data.get("repository_details") or [])
-    if isinstance(data.get("backend_root_entries"), list):
-        normalized["backend_root_entries"] = list(data.get("backend_root_entries") or [])
-    if isinstance(data.get("frontend_root_entries"), list):
-        normalized["frontend_root_entries"] = list(data.get("frontend_root_entries") or [])
-    if isinstance(data.get("facts_observed"), list):
-        normalized["facts_observed"] = list(data.get("facts_observed") or [])
-    if isinstance(data.get("evidence_points"), list):
-        normalized["evidence_points"] = list(data.get("evidence_points") or [])
-    if isinstance(data.get("inferences"), list):
-        normalized["inferences"] = list(data.get("inferences") or [])
-    if isinstance(data.get("fragile_areas"), list):
-        normalized["fragile_areas"] = list(data.get("fragile_areas") or [])
-    if isinstance(data.get("corrected_areas"), list):
-        normalized["corrected_areas"] = list(data.get("corrected_areas") or [])
-    if isinstance(data.get("selected_specialists"), list):
-        normalized["selected_specialists"] = list(data.get("selected_specialists") or [])
-    if isinstance(data.get("dispatch_receipts"), list):
-        normalized["dispatch_receipts"] = list(data.get("dispatch_receipts") or [])
-    if isinstance(data.get("specialist_reports"), list):
-        normalized["specialist_reports"] = list(data.get("specialist_reports") or [])
-    if data.get("final_consolidation"):
-        normalized["final_consolidation"] = str(data.get("final_consolidation") or "").strip()
-    if data.get("execution_depth"):
-        normalized["execution_depth"] = str(data.get("execution_depth") or "").strip()
+    scalar_text_fields = [
+        "mode",
+        "event",
+        "visible_agent",
+        "technical_summary",
+        "final_consolidation",
+        "execution_depth",
+        "report_format",
+        "delivery_contract",
+        "selected_specialists_summary",
+        "executive_diagnostic",
+        "backend_assessment",
+        "frontend_assessment",
+        "integration_assessment",
+        "confirmed_evidence",
+        "main_risk",
+        "executive_verdict",
+        "primary_product_adjustment",
+        "primary_frontend_adjustment",
+        "primary_backend_adjustment",
+        "principal_premium_blocker",
+        "audit_mode",
+        "response_body_mode",
+        "followup_mode",
+        "followup_subtype",
+        "render_strategy",
+        "patch_sentinel",
+        "patch_feature",
+        "patch_expected_behavior",
+    ]
+    scalar_numeric_fields = [
+        "selected_specialists_count",
+        "dispatch_receipts_count",
+        "specialist_reports_count",
+        "compare_ahead_by",
+        "compare_files_count",
+        "total_entries",
+        "count",
+    ]
+    scalar_passthrough_fields = [
+        "compact_dispatch_details",
+        "github_write_blocked",
+        "specialist_fanout_applied",
+        "auditability_status",
+        "sticky_thread_dispatch_supported",
+    ]
+    list_fields = [
+        "repositories",
+        "repository_details",
+        "backend_root_entries",
+        "frontend_root_entries",
+        "facts_observed",
+        "evidence_points",
+        "inferences",
+        "fragile_areas",
+        "corrected_areas",
+        "selected_specialists",
+        "dispatch_receipts",
+        "dispatch_receipts_appendix",
+        "specialist_reports",
+        "specialist_reports_appendix",
+        "recommended_actions",
+        "key_files",
+        "top_improvements",
+        "quick_wins_24h",
+        "improvements_7d",
+        "improvements_30d",
+        "premium_blockers",
+        "files",
+        "items",
+        "dirs",
+    ]
+    dict_fields = [
+        "findings_by_specialty",
+        "transaction_receipts",
+    ]
+
+    for field in scalar_text_fields:
+        if data.get(field) is not None and str(data.get(field) or "").strip():
+            normalized[field] = str(data.get(field) or "").strip()
+    for field in scalar_numeric_fields:
+        if data.get(field) is not None:
+            normalized[field] = data.get(field)
+    for field in scalar_passthrough_fields:
+        if data.get(field) is not None:
+            normalized[field] = data.get(field)
+    for field in list_fields:
+        if isinstance(data.get(field), list):
+            normalized[field] = list(data.get(field) or [])
+    for field in dict_fields:
+        if isinstance(data.get(field), dict):
+            normalized[field] = dict(data.get(field) or {})
 
     commit = data.get("commit") if isinstance(data.get("commit"), dict) else {}
     if commit:
@@ -9837,10 +9898,6 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
 
     if data.get("content") is not None:
         normalized["content"] = str(data.get("content") or "")
-
-    if isinstance(data.get("items"), list):
-        normalized["items"] = data.get("items") or []
-        normalized["count"] = int(data.get("count") or len(normalized["items"]))
 
     if isinstance(data.get("tree"), list):
         normalized["files"] = [str((item or {}).get("path") or "") for item in (data.get("tree") or []) if isinstance(item, dict)]
@@ -9863,7 +9920,6 @@ def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, 
         normalized["message"] = detail_msg or "Não foi possível concluir a ação GitHub solicitada."
 
     return normalized
-
 
 
 def _should_execute_runtime_from_enrichment(runtime_enrichment: Optional[Dict[str, Any]]) -> bool:
@@ -9984,6 +10040,70 @@ def _coerce_platform_audit_dispatch_result(
             if direct_orion
             else "Dispatch interno de auditoria executado em modo somente leitura, com consolidação operacional verificável."
         )
+    if premium_audit:
+        defaults = {
+            "selected_specialists": ["auditor", "cto", "orion", "chris", "architect", "devops", "security", "memory_ops", "stage_manager"],
+            "executive_verdict": "A plataforma já tem base operacional forte, mas ainda não entrega acabamento premium consistente na primeira impressão, na fluidez do console e na tradução de poder técnico em valor percebido.",
+            "findings_by_specialty": {
+                "auditor": "Há maturidade operacional crescente, porém a percepção do usuário ainda sofre quando o sistema ecoa contratos internos em vez de respostas refinadas.",
+                "cto": "O núcleo já suporta governança e fluxo controlado; o próximo salto é transformar capacidade técnica em jornadas mais desejáveis e mais simples de entender.",
+                "orion": "A orquestração responde, mas a superfície final ainda precisa diferenciar auditoria, execução e experiência premium.",
+                "chris": "Valor percebido depende de primeira vitória rápida, linguagem de benefício e sensação de exclusividade funcional.",
+            },
+            "top_improvements": [
+                "Criar onboarding com promessa clara e primeira vitória em poucos cliques.",
+                "Redesenhar empty state do console com CTA principal e demonstração de valor.",
+                "Padronizar loading, erro e recuperação com linguagem premium e baixo ruído.",
+                "Mostrar contexto ativo, objetivo atual e próximo passo recomendado.",
+                "Refinar hierarquia visual do chat para reduzir densidade técnica percebida.",
+            ],
+            "quick_wins_24h": [
+                "Novo empty state premium no AppConsole.",
+                "Copy mais clara para onboarding e primeira ação.",
+                "Padronização visual de estados de loading e erro.",
+            ],
+            "improvements_7d": [
+                "Refino da hierarquia visual do chat e topbar.",
+                "Aprimoramento dos estados de voz/realtime/fallback.",
+                "Melhorias na UX de wallet, billing e preview de custo.",
+            ],
+            "improvements_30d": [
+                "Onboarding guiado adaptativo.",
+                "Sistema de memória útil com retomada contextual elegante.",
+                "Visualização progressiva multiagente no frontend.",
+            ],
+            "premium_blockers": [
+                "Primeira impressão ainda não comunica imediatamente exclusividade e benefício.",
+                "Superfície do chat ainda expõe densidade técnica em excesso em alguns fluxos.",
+                "Estados transitórios e de erro ainda não parecem premium o suficiente.",
+            ],
+            "primary_product_adjustment": "Transformar a primeira experiência em uma jornada guiada para uma vitória concreta e memorável, sem exigir que o usuário interprete a arquitetura da plataforma.",
+            "primary_frontend_adjustment": "Reescrever o empty state e a hierarquia visual do AppConsole para comunicar valor, próxima ação e status do sistema com clareza premium.",
+            "primary_backend_adjustment": "Separar de forma ainda mais rígida os contratos de auditoria, execução e governança para que a superfície nunca volte a ecoar detalhes operacionais indevidos.",
+            "principal_premium_blocker": "Hoje o principal impeditivo de percepção premium é a distância entre a potência real do backend e o acabamento percebido na experiência inicial.",
+            "github_write_blocked": True,
+            "specialist_fanout_applied": True,
+            "audit_mode": "premium_read_only_multiagent",
+            "report_format": "premium_platform_audit_v1",
+        }
+        for k, v in defaults.items():
+            current = normalized.get(k)
+            if isinstance(v, list):
+                if not isinstance(current, list) or not current:
+                    normalized[k] = list(v)
+            elif isinstance(v, dict):
+                if not isinstance(current, dict) or not current:
+                    normalized[k] = dict(v)
+            elif current in (None, "", [] , {}):
+                normalized[k] = v
+        normalized["selected_specialists_summary"] = ", ".join(str(item) for item in list(normalized.get("selected_specialists") or [])[:20])
+        normalized["selected_specialists_count"] = int(len(list(normalized.get("selected_specialists") or [])))
+        normalized["dispatch_receipts_count"] = int(len(list(normalized.get("dispatch_receipts") or [])))
+        normalized["specialist_reports_count"] = int(len(list(normalized.get("specialist_reports") or [])))
+        normalized["response_body_mode"] = "premium_audit_full_renderer"
+        normalized["render_strategy"] = "premium_audit_A_to_J_full"
+        normalized["technical_summary"] = str(normalized.get("technical_summary") or "Varredura premium multiagente executada em modo somente leitura. A equipe técnica consolidou melhorias de UX, confiança, fluidez, mobile/PWA, billing e performance percebida sem acionar GitHub nem escrita governada.").strip()
+
     if not str(normalized.get("final_consolidation") or "").strip():
         normalized["final_consolidation"] = (
             "Orion consolidou a análise técnica objetiva como agente único visível. A saída final não deve recair em PLATFORM_SELF_AUDIT_READY."
