@@ -9757,7 +9757,14 @@ def _execute_capability_if_authorized(
     intent_package = ((runtime_enrichment or {}).get("intent_package") or {})
     runtime_operation = intent_package.get("runtime_operation") if isinstance(intent_package.get("runtime_operation"), dict) else {}
     requested_specialists = runtime_operation.get("requested_specialists") if isinstance(runtime_operation.get("requested_specialists"), list) else None
-    if runtime_kind == "platform_audit" and bool(runtime_operation.get("force_dispatch")):
+    if runtime_kind == "platform_audit" and bool(runtime_operation.get("sticky_dispatch_followup")):
+        txt = _canonicalize_platform_audit_followup_message(
+            txt,
+            requested_specialists=requested_specialists,
+            previous_answer_excerpt=str(runtime_operation.get("sticky_last_answer_excerpt") or "").strip(),
+            direct_orion=bool(runtime_operation.get("direct_orion", True)),
+        )
+    elif runtime_kind == "platform_audit" and bool(runtime_operation.get("force_dispatch")):
         txt = _canonicalize_platform_audit_runtime_message(
             txt,
             requested_specialists=requested_specialists,
@@ -10125,6 +10132,261 @@ def _last_assistant_text_from_history(history: Optional[List[Dict[str, str]]]) -
         if str(item.get("role") or "").strip() == "assistant":
             return str(item.get("content") or "").strip()
     return ""
+
+
+def _extract_section_bullets_from_text(text: str, heading: str) -> List[str]:
+    raw = str(text or "")
+    if not raw or not heading:
+        return []
+    target = f"{heading.strip().lower()}:"
+    lines = raw.splitlines()
+    capture = False
+    items: List[str] = []
+    for line in lines:
+        stripped = str(line or "").strip()
+        lower = stripped.lower()
+        if not capture:
+            if lower == target:
+                capture = True
+            continue
+        if not stripped:
+            if items:
+                break
+            continue
+        if stripped.endswith(":") and not stripped.startswith("- "):
+            break
+        if stripped.startswith("- "):
+            items.append(stripped[2:].strip())
+            continue
+        if items:
+            break
+    return [x for x in items if x]
+
+
+def _last_structured_dispatch_from_history(history: Optional[List[Dict[str, str]]]) -> Dict[str, Any]:
+    for item in reversed(history or []):
+        if str(item.get("role") or "").strip() != "assistant":
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        normalized = content.lower()
+        if (
+            "dispatch_receipts:" not in normalized
+            and "specialist_reports:" not in normalized
+            and "event: orion_runtime_diagnostic_executed" not in normalized
+            and "event: platform_self_audit_dispatch_executed" not in normalized
+        ):
+            continue
+
+        event_match = re.search(r"event:\s*([A-Z0-9_]+)", content)
+        delivery_match = re.search(r"delivery_contract:\s*([A-Za-z0-9_\-]+)", content)
+        execution_depth_match = re.search(r"execution_depth:\s*([A-Za-z0-9_\-]+)", content)
+        selected_specialists = _extract_section_bullets_from_text(content, "selected_specialists")
+        selected_specialists = [x.split("|")[0].strip().lower() for x in selected_specialists if x]
+        selected_specialists = [x for x in selected_specialists if x]
+        visible_agent = "orion" if "orion" in normalized else ""
+        if not visible_agent and "orkio" in normalized:
+            visible_agent = "orkio"
+
+        return {
+            "active": True,
+            "event": (event_match.group(1).strip() if event_match else ""),
+            "delivery_contract": (delivery_match.group(1).strip() if delivery_match else "orion_structured_dispatch_v1"),
+            "execution_depth": (execution_depth_match.group(1).strip().lower() if execution_depth_match else "dispatch"),
+            "visible_agent": visible_agent or "orion",
+            "selected_specialists": selected_specialists or ["orion"],
+            "last_answer_excerpt": content[:2400],
+        }
+    return {}
+
+
+def _is_structured_dispatch_followup_request(user_message: str) -> bool:
+    raw = (user_message or "").strip()
+    if not raw:
+        return False
+    norm = re.sub(r"\s+", " ", raw.lower()).strip()
+    if len(norm) > 600:
+        return False
+    followup_patterns = [
+        r"^@?[a-z0-9_\-]*\s*continue\b",
+        r"^@?[a-z0-9_\-]*\s*prossiga\b",
+        r"^@?[a-z0-9_\-]*\s*agora\s+continue\b",
+        r"^@?[a-z0-9_\-]*\s*continue\s+agora\b",
+        r"^@?[a-z0-9_\-]*\s*continue[,\.]?\s+",
+        r"^@?[a-z0-9_\-]*\s*aprofunde\b",
+        r"^@?[a-z0-9_\-]*\s*desdobre\b",
+        r"^@?[a-z0-9_\-]*\s*expanda\b",
+        r"^@?[a-z0-9_\-]*\s*refine\b",
+        r"^@?[a-z0-9_\-]*\s*me\s+devolva\s+isso\s+em\s+formato\s+executivo\b",
+        r"^@?[a-z0-9_\-]*\s*transforme\s+isso\s+em\s+formato\s+executivo\b",
+    ]
+    semantic_markers = [
+        "causas raiz",
+        "riscos estruturais",
+        "próximos passos",
+        "proximos passos",
+        "evidências técnicas",
+        "evidencias tecnicas",
+        "formato executivo",
+        "diagnóstico executivo",
+        "diagnostico executivo",
+        "sem perder evidências",
+        "sem perder evidencias",
+        "sem perder a estrutura",
+        "executive_diagnostic",
+        "technical_summary",
+        "final_consolidation",
+        "dispatch_receipts",
+        "specialist_reports",
+    ]
+    return any(re.search(pat, norm, flags=re.IGNORECASE) for pat in followup_patterns) or any(marker in norm for marker in semantic_markers)
+
+
+def _should_inherit_thread_dispatch_contract(
+    user_message: str,
+    thread_contract: Optional[Dict[str, Any]] = None,
+    *,
+    requested_names: Optional[List[str]] = None,
+) -> bool:
+    contract = thread_contract or {}
+    if not contract or not contract.get("active"):
+        return False
+    if str(contract.get("execution_depth") or "").strip().lower() != "dispatch":
+        return False
+    contract_name = str(contract.get("delivery_contract") or "").strip().lower()
+    if contract_name and contract_name != "orion_structured_dispatch_v1":
+        return False
+
+    requested = [str(x).strip().lower() for x in (requested_names or []) if str(x).strip()]
+    if requested and any(name not in {"orion"} for name in requested):
+        return False
+
+    try:
+        explicit_flags = _runtime_orion_dispatch_request_flags(user_message)
+        if bool(explicit_flags.get("requested")):
+            return True
+    except Exception:
+        pass
+
+    return _is_structured_dispatch_followup_request(user_message)
+
+
+def _canonicalize_platform_audit_followup_message(
+    user_text: str,
+    *,
+    requested_specialists: Optional[List[str]] = None,
+    previous_answer_excerpt: str = "",
+    direct_orion: bool = True,
+) -> str:
+    specialists = [str(x).strip().lower() for x in (requested_specialists or []) if str(x).strip()]
+    if not specialists:
+        specialists = ["orion"]
+    visible_agent = "orion" if direct_orion else "orkio"
+    specialist_csv = ", ".join(specialists)
+    original = (user_text or "").strip()
+    previous_excerpt = (previous_answer_excerpt or "").strip()
+    if len(previous_excerpt) > 1800:
+        previous_excerpt = previous_excerpt[:1800].rstrip() + "..."
+
+    base = (
+        "CONTINUIDADE DE DISPATCH TÉCNICO READ-ONLY NA MESMA THREAD. "
+        f"Agente visível final: {visible_agent}. "
+        f"Preserve delivery_contract=orion_structured_dispatch_v1, execution_depth=dispatch e especialistas ativos: {specialist_csv}. "
+        "A resposta deve permanecer em modo estruturado com event, selected_specialists, dispatch_receipts, specialist_reports, technical_summary e final_consolidation. "
+        "Não rebaixe para resposta consultiva genérica, não faça check-in aberto e não perca a trilha operacional já confirmada. "
+        "Se o usuário pedir aprofundamento, aprofunde causas raiz, riscos, evidências e próximos passos mantendo a mesma estrutura. "
+    )
+    if previous_excerpt:
+        base += f"Última resposta estruturada confirmada:\n{previous_excerpt}\n\n"
+    base += f"Pedido atual do usuário: {original}"
+    return base
+
+
+def _apply_sticky_thread_dispatch_enrichment(
+    runtime_enrichment: Optional[Dict[str, Any]],
+    user_text: str,
+    *,
+    thread_contract: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized = dict(runtime_enrichment or {})
+    contract = dict(thread_contract or {})
+    if not contract.get("active"):
+        return normalized
+
+    requested_specialists = list(contract.get("selected_specialists") or ["orion"])
+    intent_package = normalized.get("intent_package") if isinstance(normalized.get("intent_package"), dict) else {}
+    runtime_operation = intent_package.get("runtime_operation") if isinstance(intent_package.get("runtime_operation"), dict) else {}
+    runtime_operation.update({
+        "kind": "platform_audit",
+        "target_agent": "orion",
+        "mode": "execute",
+        "audit_mode": "specialist",
+        "prepare_only": False,
+        "execution_depth": "dispatch",
+        "visible_only_agent": "orion",
+        "response_profile": "orion_objective_diagnostic",
+        "include_frontend": True,
+        "force_dispatch": True,
+        "direct_orion": True,
+        "requested_specialists": requested_specialists,
+        "delivery_contract": contract.get("delivery_contract") or "orion_structured_dispatch_v1",
+        "structured_output": True,
+        "dispatch_receipts_expected": True,
+        "specialist_reports_expected": True,
+        "final_consolidation_expected": True,
+        "auditability_expected": True,
+        "execution_audit_expected": True,
+        "persist_execution_audit": True,
+        "contract_inherited_from_thread": True,
+        "sticky_dispatch_followup": True,
+        "sticky_dispatch_event": contract.get("event") or "",
+        "sticky_last_answer_excerpt": contract.get("last_answer_excerpt") or "",
+    })
+    intent_package["runtime_operation"] = runtime_operation
+    intent_package["requires_runtime_execution"] = True
+    intent_package["delivery_contract"] = runtime_operation.get("delivery_contract") or "orion_structured_dispatch_v1"
+    intent_package["structured_output"] = True
+    normalized["intent_package"] = intent_package
+
+    planner_snapshot = normalized.get("planner_snapshot") if isinstance(normalized.get("planner_snapshot"), dict) else {}
+    planner_snapshot.update({
+        "execution_depth": "dispatch",
+        "visible_only_agent": "orion",
+        "preferred_visible_node": "orion",
+        "response_profile": "orion_objective_diagnostic",
+        "audit_mode": "specialist",
+        "requires_capability": "platform_audit",
+        "prepare_only": False,
+        "delivery_contract": runtime_operation.get("delivery_contract") or "orion_structured_dispatch_v1",
+        "contract_inherited_from_thread": True,
+    })
+    normalized["planner_snapshot"] = planner_snapshot
+
+    dag_snapshot = normalized.get("dag_snapshot") if isinstance(normalized.get("dag_snapshot"), dict) else {}
+    dag_snapshot.update({
+        "execution_depth": "dispatch",
+        "preferred_visible_node": "orion",
+        "visible_node": "orion",
+        "route_applied": True,
+        "contract_inherited_from_thread": True,
+    })
+    normalized["dag_snapshot"] = dag_snapshot
+
+    runtime_hints = normalized.get("runtime_hints") if isinstance(normalized.get("runtime_hints"), dict) else {}
+    runtime_hints.update({
+        "force_runtime_execution": True,
+        "force_runtime_dispatch": True,
+        "force_single_visible_agent": "orion",
+        "sticky_dispatch_contract_from_thread": True,
+        "sticky_dispatch_event": contract.get("event") or "",
+        "sticky_delivery_contract": runtime_operation.get("delivery_contract") or "orion_structured_dispatch_v1",
+        "sticky_selected_specialists": requested_specialists,
+        "sticky_last_answer_excerpt": (contract.get("last_answer_excerpt") or "")[:1800],
+    })
+    normalized["runtime_hints"] = runtime_hints
+    normalized["thread_dispatch_contract"] = contract
+    return normalized
 
 
 def _is_followup_continue_request(user_message: str) -> bool:
@@ -11139,13 +11401,22 @@ def _build_runtime_enrichment(
     available_agents: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     prev_messages = prev_messages or []
-    context = {"summary": f"{len(prev_messages)} previous messages"} if prev_messages else {}
     memories = _load_recent_runtime_memories(db, org, uid)
     memory_snapshot = build_memory_snapshot(memories)
     prev_serialized = [
         {"role": getattr(pm, "role", None), "content": getattr(pm, "content", None), "created_at": getattr(pm, "created_at", None)}
         for pm in prev_messages[-8:]
     ]
+    thread_dispatch_contract = _last_structured_dispatch_from_history(prev_serialized)
+    context = {"summary": f"{len(prev_messages)} previous messages"} if prev_messages else {}
+    if thread_dispatch_contract:
+        context.update({
+            "sticky_dispatch_active": bool(thread_dispatch_contract.get("active")),
+            "sticky_delivery_contract": thread_dispatch_contract.get("delivery_contract") or "",
+            "sticky_dispatch_event": thread_dispatch_contract.get("event") or "",
+            "sticky_visible_agent": thread_dispatch_contract.get("visible_agent") or "",
+            "sticky_selected_specialists": list(thread_dispatch_contract.get("selected_specialists") or []),
+        })
     intent_package = build_intent_package(message, context=context)
     first_win_plan = build_first_win_plan(intent_package)
     continuity_hints = build_continuity_hints(
@@ -11245,6 +11516,7 @@ def _build_runtime_enrichment(
         "trial_analytics": trial_analytics,
         "system_overlay": system_overlay,
         "runtime_hints": runtime_hints,
+        "thread_dispatch_contract": thread_dispatch_contract,
     }
 
 def _persist_trial_state(
@@ -14040,6 +14312,25 @@ async def chat_stream(
     except Exception:
         pass
 
+    try:
+        thread_dispatch_contract = runtime_enrichment.get("thread_dispatch_contract") if isinstance(runtime_enrichment, dict) else {}
+        if _should_inherit_thread_dispatch_contract(
+            message,
+            thread_contract=(thread_dispatch_contract if isinstance(thread_dispatch_contract, dict) else {}),
+            requested_names=requested_names,
+        ):
+            runtime_enrichment = _apply_sticky_thread_dispatch_enrichment(
+                runtime_enrichment,
+                message,
+                thread_contract=(thread_dispatch_contract if isinstance(thread_dispatch_contract, dict) else {}),
+            )
+            _forced_orion_followup = _pick_target_agent_by_slug(target_agents, "orion")
+            if _forced_orion_followup is not None:
+                target_agents = [_forced_orion_followup]
+                requested_names = ["orion"]
+    except Exception:
+        pass
+
     if runtime_enrichment.get("planner_snapshot") and len(target_agents) > 1:
         target_agents = _reorder_agents_by_planner(target_agents, runtime_enrichment.get("planner_snapshot"))
     try:
@@ -14345,18 +14636,25 @@ async def chat_stream(
 
                 planner_snapshot_live = runtime_enrichment.get("planner_snapshot") if isinstance(runtime_enrichment, dict) else {}
                 dag_snapshot_live = runtime_enrichment.get("dag_snapshot") if isinstance(runtime_enrichment, dict) else {}
+                runtime_hints_live = runtime_enrichment.get("runtime_hints") if isinstance(runtime_enrichment, dict) and isinstance(runtime_enrichment.get("runtime_hints"), dict) else {}
                 selected_agent_name = ag_name
                 runtime_primary_agent_name = _agent_attr(runtime_primary_agent, "name", None)
                 preferred_visible_node = None
                 visible_node = None
                 execution_depth = None
+                contract_inherited_from_thread = bool(runtime_hints_live.get("sticky_dispatch_contract_from_thread"))
+                sticky_delivery_contract = str(runtime_hints_live.get("sticky_delivery_contract") or "").strip()
+                sticky_dispatch_event = str(runtime_hints_live.get("sticky_dispatch_event") or "").strip()
                 if isinstance(planner_snapshot_live, dict):
                     preferred_visible_node = planner_snapshot_live.get("preferred_visible_node") or planner_snapshot_live.get("visible_only_agent")
                     execution_depth = execution_depth or planner_snapshot_live.get("execution_depth")
+                    contract_inherited_from_thread = contract_inherited_from_thread or bool(planner_snapshot_live.get("contract_inherited_from_thread"))
+                    sticky_delivery_contract = sticky_delivery_contract or str(planner_snapshot_live.get("delivery_contract") or "").strip()
                 if isinstance(dag_snapshot_live, dict):
                     preferred_visible_node = preferred_visible_node or dag_snapshot_live.get("preferred_visible_node")
                     visible_node = dag_snapshot_live.get("visible_node")
                     execution_depth = execution_depth or dag_snapshot_live.get("execution_depth")
+                    contract_inherited_from_thread = contract_inherited_from_thread or bool(dag_snapshot_live.get("contract_inherited_from_thread"))
                 if visible_node in (None, ""):
                     visible_node = final_signer_agent_name
                 route_debug_payload = {
@@ -14372,6 +14670,9 @@ async def chat_stream(
                     "should_execute_runtime": bool(should_execute_runtime),
                     "followup_continuation_applied": followup_continuation_applied,
                     "requested_names": list(requested_names or []),
+                    "contract_inherited_from_thread": contract_inherited_from_thread,
+                    "sticky_delivery_contract": sticky_delivery_contract,
+                    "sticky_dispatch_event": sticky_dispatch_event,
                 }
                 try:
                     logger.info(
@@ -14774,6 +15075,9 @@ async def chat_stream(
                     "specialist_reports_count": (execution_result or {}).get("specialist_reports_count"),
                     "preferred_visible_node": route_debug_payload.get("preferred_visible_node"),
                     "visible_node": route_debug_payload.get("visible_node"),
+                    "contract_inherited_from_thread": route_debug_payload.get("contract_inherited_from_thread"),
+                    "sticky_delivery_contract": route_debug_payload.get("sticky_delivery_contract"),
+                    "sticky_dispatch_event": route_debug_payload.get("sticky_dispatch_event"),
                 }
                 try:
                     logger.info(
