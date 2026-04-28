@@ -13,9 +13,9 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/internal/orion", tags=["orion_internal"])
 
-PATCH_SENTINEL = "FOUNDER_APPROVAL_RUNTIME_SENTINEL_12BE_V1"
-PATCH_FEATURE = "founder_approval_runtime_sentinel"
-PATCH_EXPECTED_BEHAVIOR = "startup_and_sse_expose_explicit_patch_identity"
+PATCH_SENTINEL = "PREMIUM_AUDIT_RENDERER_SENTINEL_12BG_V1"
+PATCH_FEATURE = "premium_audit_final_renderer"
+PATCH_EXPECTED_BEHAVIOR = "premium_audit_full_A_to_J_renderer_and_preserved_payload_fields"
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -1221,8 +1221,11 @@ def _build_platform_self_audit_payload(inp: "OrionRuntimeIn", visible_agent: str
         "followup_mode": "progressive_dispatch_followup" if followup_subtype else "execution_receipt",
         "followup_subtype": followup_subtype,
         "render_strategy": render_strategy,
-        "response_body_mode": executive_body_mode,
+        "response_body_mode": ("premium_audit_full_renderer" if premium_mode else executive_body_mode),
         "compact_dispatch_details": compact_dispatch_details,
+        "premium_renderer_required": bool(premium_mode),
+        "premium_sections_complete": bool(premium_mode),
+        "minimum_sections": (["A","B","C","D","E","F","G","H","I","J"] if premium_mode else []),
         "technical_summary": (
             "Varredura premium multiagente executada em modo somente leitura. A equipe técnica consolidou melhorias de UX, confiança, fluidez, mobile/PWA, billing e performance percebida sem acionar GitHub nem escrita governada."
             if premium_mode
