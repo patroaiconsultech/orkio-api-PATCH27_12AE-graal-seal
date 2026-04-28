@@ -14,9 +14,9 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/internal/orion", tags=["orion_internal"])
 
-PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BK_V1"
+PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BM_V1"
 PATCH_FEATURE = "github_pr_compare_status_resolver"
-PATCH_EXPECTED_BEHAVIOR = "github_compare_and_pr_status_requests_resolve_without_inventory_fallback"
+PATCH_EXPECTED_BEHAVIOR = "github_compare_and_pr_status_requests_resolve_without_inventory_fallback_and_repo_aliases"
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -216,6 +216,12 @@ def _looks_like_compare_status_request(message: str) -> bool:
         "compare a branch",
         "compare branch",
         "compare branches",
+        "compare da",
+        "compare do",
+        "quero o compare",
+        "quero compare",
+        "comparar a branch",
+        "comparar branch",
         "compare_ok",
         "ahead_by",
         "status da pr",
@@ -229,44 +235,40 @@ def _looks_like_compare_status_request(message: str) -> bool:
     has_compare = any(marker in txt for marker in compare_markers)
     has_pr_ref = bool(re.search(r"\bpr\s*#?\s*\d+\b", txt, flags=re.IGNORECASE))
     has_branch_compare = (("branch" in txt) or ("branches" in txt)) and (("compare" in txt) or ("comparar" in txt))
+    has_compare_word = ("compare" in txt) or ("comparar" in txt)
+    has_repo_hint = any(token in txt for token in ["repo", "repositório", "repositorio", "frontend", "backend", "main", "master", "contra", "versus", "vs"])
+    has_ref_slug = bool(re.search(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", txt))
     structured_fields = any(field in txt for field in ["files_changed", "commit_sha", "compare_ok", "ahead_by", "pr_url", "pr_number"])
-    return bool(has_compare or has_pr_ref or has_branch_compare or structured_fields)
+    return bool(has_compare or has_pr_ref or has_branch_compare or structured_fields or (has_compare_word and (has_repo_hint or has_ref_slug)))
 
 
-_COMMON_BRANCH_PREFIXES = {
-    "feat",
-    "feature",
-    "fix",
-    "hotfix",
-    "chore",
-    "docs",
-    "doc",
-    "refactor",
-    "test",
-    "tests",
-    "ci",
-    "build",
-    "release",
-    "bugfix",
-    "perf",
-    "style",
-    "spike",
-}
+def _repo_short_name(repo: str) -> str:
+    repo = str(repo or "").strip()
+    if "/" not in repo:
+        return repo
+    return repo.split("/", 1)[1].strip()
 
 
-def _looks_like_repo_slug(candidate: str) -> bool:
-    value = str(candidate or "").strip().strip("/")
-    return bool(value) and value.count("/") == 1 and all(part.strip() for part in value.split("/", 1))
+def _repo_owner(repo: str) -> str:
+    repo = str(repo or "").strip()
+    if "/" not in repo:
+        return ""
+    return repo.split("/", 1)[0].strip()
 
 
-def _looks_like_branch_ref(candidate: str) -> bool:
-    value = str(candidate or "").strip().strip("/")
+def _looks_like_branch_slug(value: str) -> bool:
+    value = str(value or "").strip().lower()
     if not value or "/" not in value:
         return False
-    if value.startswith("refs/heads/"):
+    prefixes = ("feat/", "fix/", "hotfix/", "chore/", "docs/", "refactor/", "test/", "tests/", "build/", "ci/", "perf/", "release/")
+    if value.startswith(prefixes):
         return True
-    first = value.split("/", 1)[0].strip().lower()
-    return first in _COMMON_BRANCH_PREFIXES
+    owner, slug = value.split("/", 1)
+    if owner in {"main", "master", "develop", "dev", "production", "prod"}:
+        return True
+    if not owner or not slug:
+        return True
+    return False
 
 
 def _extract_explicit_repo_from_message(message: str) -> str:
@@ -274,41 +276,66 @@ def _extract_explicit_repo_from_message(message: str) -> str:
     if not txt:
         return ""
 
-    url_match = re.search(
-        r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
-        txt,
-        flags=re.IGNORECASE,
-    )
+    url_match = re.search(r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", txt, flags=re.IGNORECASE)
     if url_match:
-        candidate = str(url_match.group(1) or "").strip()
-        if _looks_like_repo_slug(candidate) and not _looks_like_branch_ref(candidate):
-            return candidate
+        candidate = str(url_match.group(1) or "").strip().strip("/")
+        return "" if _looks_like_branch_slug(candidate) else candidate
 
-    explicit_patterns = [
-        r"(?:reposit[oó]rio|repositorio|repo|repository)\s+(?:frontend\s+|backend\s+|web\s+|api\s+)?([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
-        r"(?:no|na|do|da)\s+(?:reposit[oó]rio|repositorio|repo|repository)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+    marker_patterns = [
+        r"(?:repositório|repositorio|repo|repository)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        r"(?:repositório|repositorio|repo|repository)\s*[:=]\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        r"no\s+(?:repositório|repositorio|repo|repository)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        r"do\s+(?:repositório|repositorio|repo|repository)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
     ]
-    for pattern in explicit_patterns:
-        match = re.search(pattern, txt, flags=re.IGNORECASE)
-        if not match:
+    for pat in marker_patterns:
+        m = re.search(pat, txt, flags=re.IGNORECASE)
+        if not m:
             continue
-        candidate = str(match.group(1) or "").strip()
-        if _looks_like_repo_slug(candidate) and not _looks_like_branch_ref(candidate):
+        candidate = str(m.group(1) or "").strip()
+        if candidate and not _looks_like_branch_slug(candidate):
             return candidate
-
     return ""
+
+
+def _repo_matches_alias(candidate: str, configured: str) -> bool:
+    candidate = str(candidate or "").strip().lower()
+    configured = str(configured or "").strip().lower()
+    if not candidate or not configured:
+        return False
+    if candidate == configured:
+        return True
+    candidate_owner = _repo_owner(candidate)
+    configured_owner = _repo_owner(configured)
+    candidate_short = _repo_short_name(candidate).lower()
+    configured_short = _repo_short_name(configured).lower()
+    if candidate_owner and configured_owner and candidate_owner != configured_owner:
+        return False
+    if candidate_short == configured_short:
+        return True
+    if configured_short.startswith(candidate_short + "-"):
+        return True
+    return False
+
+
+def _normalize_repo_target(repo_candidate: str, backend: str, frontend: str, message: str) -> str:
+    candidate = str(repo_candidate or "").strip()
+    txt = (message or "").strip().lower()
+    if candidate:
+        if _repo_matches_alias(candidate, frontend):
+            return frontend or candidate
+        if _repo_matches_alias(candidate, backend):
+            return backend or candidate
+        return candidate
+    if "frontend" in txt or "web" in txt or "appconsole" in txt or "react" in txt or "tsx" in txt or "jsx" in txt:
+        return frontend or backend
+    return backend or frontend
 
 
 def _resolve_repo_target_from_message(message: str) -> str:
     explicit = _extract_explicit_repo_from_message(message)
     backend = _github_repo()
     frontend = _github_repo_web()
-    txt = (message or "").strip().lower()
-    if explicit:
-        return explicit
-    if "frontend" in txt or "web" in txt or "appconsole" in txt or "react" in txt or "tsx" in txt or "jsx" in txt:
-        return frontend or backend
-    return backend or frontend
+    return _normalize_repo_target(explicit, backend, frontend, message)
 
 
 def _extract_branch_names_from_message(message: str) -> tuple[str, str]:
@@ -354,13 +381,6 @@ def _extract_pr_number_from_message(message: str) -> int:
         return int(m.group(1)) if m else 0
     except Exception:
         return 0
-
-
-def _repo_owner(repo: str) -> str:
-    repo = str(repo or "").strip()
-    if "/" not in repo:
-        return ""
-    return repo.split("/", 1)[0].strip()
 
 
 def _github_branch_head_sha(repo: str, branch: str) -> str:
@@ -468,8 +488,14 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
                 "event": "GITHUB_COMPARE_STATUS_FAILED",
                 "provider": "github",
                 "visible_agent": visible_agent,
+                "repo": repo_target,
                 "repo_target": repo_target,
+                "backend_repo": _github_repo(),
+                "frontend_repo": _github_repo_web(),
+                "repository_details": repository_details,
+                "pr_number": int(pr_number or 0),
                 "message": str(pr_lookup.get("message") or "pull_request_not_found"),
+                "generated_at": _now_ts(),
             }
 
     if not head:
@@ -480,33 +506,29 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
             "event": "GITHUB_COMPARE_STATUS_FAILED",
             "provider": "github",
             "visible_agent": visible_agent,
+            "repo": repo_target,
             "repo_target": repo_target,
+            "backend_repo": _github_repo(),
+            "frontend_repo": _github_repo_web(),
+            "repository_details": repository_details,
+            "pr_number": int(pr_number or 0),
             "message": "head_branch_not_detected",
+            "generated_at": _now_ts(),
         }
 
-    if not pr_number:
-        pr_lookup = _github_find_pull_by_head(repo_target, head, base or default_branch)
-        if pr_lookup.get("ok"):
-            pr_payload = pr_lookup.get("body") if isinstance(pr_lookup.get("body"), dict) else {}
-            pr_number = int(pr_payload.get("number") or 0)
-            pr_url = str(pr_payload.get("html_url") or "").strip()
-            merge_executed = bool(pr_payload.get("merged"))
-            head_ref = pr_payload.get("head") if isinstance(pr_payload.get("head"), dict) else {}
-            base_ref = pr_payload.get("base") if isinstance(pr_payload.get("base"), dict) else {}
-            head = head or str(head_ref.get("ref") or "").strip()
-            base = base or str(base_ref.get("ref") or "").strip() or default_branch
-            head_sha = str(head_ref.get("sha") or "").strip()
-
     compare_payload = _github_compare(repo_target, base or default_branch, head)
-    compare_reference = head
-    compare_error = ""
-    if not compare_payload.get("ok") and head_sha:
-        compare_reference = head_sha
+    if (not compare_payload.get("ok")) and head_sha:
         compare_payload = _github_compare(repo_target, base or default_branch, head_sha)
 
     if not compare_payload.get("ok"):
-        compare_error = str(compare_payload.get("message") or "compare_failed")
-        if pr_payload:
+        if not pr_number:
+            pr_lookup = _github_find_pull_by_head(repo_target, head, base or default_branch)
+            if pr_lookup.get("ok"):
+                pr_payload = pr_lookup.get("body") if isinstance(pr_lookup.get("body"), dict) else {}
+                pr_number = int(pr_payload.get("number") or 0)
+                pr_url = str(pr_payload.get("html_url") or "").strip()
+                merge_executed = bool(pr_payload.get("merged"))
+        if pr_number or pr_url:
             return {
                 "ok": True,
                 "service": "orion_internal",
@@ -523,20 +545,11 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
                 "branch_name": head,
                 "base_branch": base or default_branch,
                 "compare_ok": False,
-                "compare_error": compare_error,
-                "compare_reference": compare_reference,
-                "ahead_by": 0,
-                "behind_by": 0,
-                "files_changed": [],
-                "files_count": 0,
-                "commit_sha": head_sha or _github_branch_head_sha(repo_target, head),
+                "compare_error": str(compare_payload.get("message") or "compare_failed"),
                 "pr_number": int(pr_number or 0),
                 "pr_url": pr_url,
                 "merge_executed": bool(merge_executed),
                 "deploy_executed": False,
-                "merge_not_executed": not bool(merge_executed),
-                "deploy_not_executed": True,
-                "message": "PR resolvida; compare indisponível no GitHub para este head/base.",
                 "generated_at": _now_ts(),
             }
         return {
@@ -546,13 +559,25 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
             "event": "GITHUB_COMPARE_STATUS_FAILED",
             "provider": "github",
             "visible_agent": visible_agent,
+            "repo": repo_target,
             "repo_target": repo_target,
+            "backend_repo": _github_repo(),
+            "frontend_repo": _github_repo_web(),
+            "repository_details": repository_details,
             "branch_name": head,
             "base_branch": base or default_branch,
-            "message": compare_error,
+            "message": str(compare_payload.get("message") or "compare_failed"),
+            "generated_at": _now_ts(),
         }
 
-    commit_sha = str(compare_payload.get("commit_sha") or head_sha or "").strip()
+    if not pr_number:
+        pr_lookup = _github_find_pull_by_head(repo_target, head, base or default_branch)
+        if pr_lookup.get("ok"):
+            pr_payload = pr_lookup.get("body") if isinstance(pr_lookup.get("body"), dict) else {}
+            pr_number = int(pr_payload.get("number") or 0)
+            pr_url = str(pr_payload.get("html_url") or "").strip()
+            merge_executed = bool(pr_payload.get("merged"))
+    commit_sha = str(compare_payload.get("commit_sha") or "").strip()
     files_changed = list(compare_payload.get("files_changed") or [])
     return {
         "ok": True,
@@ -570,7 +595,432 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
         "branch_name": head,
         "base_branch": base or default_branch,
         "compare_ok": True,
-        "compare_reference": compare_reference,
+        "ahead_by": int(compare_payload.get("ahead_by") or 0),
+        "behind_by": int(compare_payload.get("behind_by") or 0),
+        "files_changed": files_changed,
+        "files_count": len(files_changed),
+        "commit_sha": commit_sha,
+        "pr_number": int(pr_number or 0),
+        "pr_url": pr_url,
+        "merge_executed": bool(merge_executed),
+        "deploy_executed": False,
+        "generated_at": _now_ts(),
+    }
+
+
+def _safe_patch_policy() -> Dict[str, Any]:
+    return {
+        "write_enabled": _github_write_enabled(),
+        "pr_enabled": _github_pr_enabled(),
+        "main_direct_write_allowed": _main_direct_allowed(),
+        "require_explicit_deploy_approval": _bool_env("REQUIRE_EXPLICIT_DEPLOY_APPROVAL", True),
+        "require_explicit_pr_approval": _bool_env("REQUIRE_EXPLICIT_PR_APPROVAL", True),
+        "require_explicit_db_approval": _bool_env("REQUIRE_EXPLICIT_DB_APPROVAL", True),
+        "db_runtime_allow_destructive": _bool_env("DB_RUNTIME_ALLOW_DESTRUCTIVE", False),
+        "controlled_overlay_enabled": _bool_env("CONTROLLED_EVOLUTION_OVERLAY_ENABLED", True),
+        "evolution_loop_enabled": _evolution_enabled(),
+        "write_allowed_agents": _allowed_write_agents(),
+        "read_allowed_agents": _allowed_read_agents(),
+        "require_explicit_pr_approval": _bool_env("REQUIRE_EXPLICIT_PR_APPROVAL", True),
+        "transactional_flow_required": True,
+        "receipt_required_steps": [
+            "branch_created",
+            "files_written",
+            "commit_created",
+            "compare_ok",
+            "pull_request_opened",
+        ],
+        "pr_open_requires_branch_and_commit": True,
+        "approval_grant_expands_transaction_prerequisites": True,
+        "frontend_repo_target_hard_binding": True,
+        "proposal_to_file_write_emission": True,
+        "patch_sentinel": PATCH_SENTINEL,
+        "patch_feature": PATCH_FEATURE,
+        "patch_expected_behavior": PATCH_EXPECTED_BEHAVIOR,
+    }
+
+
+
+def _github_runtime_token() -> str:
+    return (
+        _clean_env("ORKIO_GITHUB_CONTROL_PLANE_TOKEN", "")
+        or _clean_env("GITHUB_TOKEN", "")
+        or _clean_env("GH_TOKEN", "")
+    )
+
+
+def _github_headers() -> Dict[str, str]:
+    token = _github_runtime_token()
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "orkio-orion-runtime/1.0",
+        "Content-Type": "application/json",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _github_api_json(method: str, url: str) -> tuple[int, Any]:
+    req = _urllib_request.Request(url, headers=_github_headers(), method=method.upper())
+    ctx = _ssl.create_default_context()
+    try:
+        with _urllib_request.urlopen(req, context=ctx, timeout=15) as resp:
+            raw = resp.read().decode("utf-8", errors="replace") or "null"
+            try:
+                return int(getattr(resp, "status", 200) or 200), json.loads(raw)
+            except Exception:
+                return int(getattr(resp, "status", 200) or 200), {"raw": raw}
+    except Exception as exc:
+        status = int(getattr(exc, "code", 0) or 0)
+        body = getattr(exc, "read", None)
+        parsed: Any = {}
+        try:
+            if body:
+                raw = body().decode("utf-8", errors="replace") or "null"
+                parsed = json.loads(raw)
+        except Exception:
+            parsed = {"message": str(exc)}
+        if not parsed:
+            parsed = {"message": str(exc)}
+        return status, parsed
+
+
+
+def _looks_like_compare_status_request(message: str) -> bool:
+    txt = (message or "").strip().lower()
+    if not txt:
+        return False
+    compare_markers = [
+        "compare a branch",
+        "compare branch",
+        "compare branches",
+        "compare da",
+        "compare do",
+        "quero o compare",
+        "quero compare",
+        "comparar a branch",
+        "comparar branch",
+        "compare_ok",
+        "ahead_by",
+        "status da pr",
+        "status final da pr",
+        "status final do pr",
+        "pr status",
+        "pull request status",
+        "pr_url",
+        "pr_number",
+    ]
+    has_compare = any(marker in txt for marker in compare_markers)
+    has_pr_ref = bool(re.search(r"\bpr\s*#?\s*\d+\b", txt, flags=re.IGNORECASE))
+    has_branch_compare = (("branch" in txt) or ("branches" in txt)) and (("compare" in txt) or ("comparar" in txt))
+    has_compare_word = ("compare" in txt) or ("comparar" in txt)
+    has_repo_hint = any(token in txt for token in ["repo", "repositório", "repositorio", "frontend", "backend", "main", "master", "contra", "versus", "vs"])
+    has_ref_slug = bool(re.search(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", txt))
+    structured_fields = any(field in txt for field in ["files_changed", "commit_sha", "compare_ok", "ahead_by", "pr_url", "pr_number"])
+    return bool(has_compare or has_pr_ref or has_branch_compare or structured_fields or (has_compare_word and (has_repo_hint or has_ref_slug)))
+
+
+def _repo_short_name(repo: str) -> str:
+    repo = str(repo or "").strip()
+    if "/" not in repo:
+        return repo
+    return repo.split("/", 1)[1].strip()
+
+
+def _repo_owner(repo: str) -> str:
+    repo = str(repo or "").strip()
+    if "/" not in repo:
+        return ""
+    return repo.split("/", 1)[0].strip()
+
+
+def _looks_like_branch_slug(value: str) -> bool:
+    value = str(value or "").strip().lower()
+    if not value or "/" not in value:
+        return False
+    prefixes = ("feat/", "fix/", "hotfix/", "chore/", "docs/", "refactor/", "test/", "tests/", "build/", "ci/", "perf/", "release/")
+    if value.startswith(prefixes):
+        return True
+    owner, slug = value.split("/", 1)
+    if owner in {"main", "master", "develop", "dev", "production", "prod"}:
+        return True
+    if not owner or not slug:
+        return True
+    return False
+
+
+def _extract_explicit_repo_from_message(message: str) -> str:
+    txt = (message or "").strip()
+    if not txt:
+        return ""
+
+    url_match = re.search(r"github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", txt, flags=re.IGNORECASE)
+    if url_match:
+        candidate = str(url_match.group(1) or "").strip().strip("/")
+        return "" if _looks_like_branch_slug(candidate) else candidate
+
+    marker_patterns = [
+        r"(?:repositório|repositorio|repo|repository)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        r"(?:repositório|repositorio|repo|repository)\s*[:=]\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        r"no\s+(?:repositório|repositorio|repo|repository)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+        r"do\s+(?:repositório|repositorio|repo|repository)\s+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)",
+    ]
+    for pat in marker_patterns:
+        m = re.search(pat, txt, flags=re.IGNORECASE)
+        if not m:
+            continue
+        candidate = str(m.group(1) or "").strip()
+        if candidate and not _looks_like_branch_slug(candidate):
+            return candidate
+    return ""
+
+
+def _repo_matches_alias(candidate: str, configured: str) -> bool:
+    candidate = str(candidate or "").strip().lower()
+    configured = str(configured or "").strip().lower()
+    if not candidate or not configured:
+        return False
+    if candidate == configured:
+        return True
+    candidate_owner = _repo_owner(candidate)
+    configured_owner = _repo_owner(configured)
+    candidate_short = _repo_short_name(candidate).lower()
+    configured_short = _repo_short_name(configured).lower()
+    if candidate_owner and configured_owner and candidate_owner != configured_owner:
+        return False
+    if candidate_short == configured_short:
+        return True
+    if configured_short.startswith(candidate_short + "-"):
+        return True
+    return False
+
+
+def _normalize_repo_target(repo_candidate: str, backend: str, frontend: str, message: str) -> str:
+    candidate = str(repo_candidate or "").strip()
+    txt = (message or "").strip().lower()
+    if candidate:
+        if _repo_matches_alias(candidate, frontend):
+            return frontend or candidate
+        if _repo_matches_alias(candidate, backend):
+            return backend or candidate
+        return candidate
+    if "frontend" in txt or "web" in txt or "appconsole" in txt or "react" in txt or "tsx" in txt or "jsx" in txt:
+        return frontend or backend
+    return backend or frontend
+
+
+def _resolve_repo_target_from_message(message: str) -> str:
+    explicit = _extract_explicit_repo_from_message(message)
+    backend = _github_repo()
+    frontend = _github_repo_web()
+    return _normalize_repo_target(explicit, backend, frontend, message)
+
+
+def _extract_branch_names_from_message(message: str) -> tuple[str, str]:
+    txt = (message or "").strip()
+    default_branch = _default_branch()
+    head = ""
+    base = ""
+    patterns = [
+        r"branch\s+([A-Za-z0-9_./-]+)\s+com\s+a\s+branch\s+([A-Za-z0-9_./-]+)",
+        r"branch\s+([A-Za-z0-9_./-]+)\s+to\s+([A-Za-z0-9_./-]+)",
+        r"da\s+branch\s+([A-Za-z0-9_./-]+)\s+para\s+([A-Za-z0-9_./-]+)",
+        r"head\s*[:=]\s*([A-Za-z0-9_./-]+).*?base\s*[:=]\s*([A-Za-z0-9_./-]+)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, txt, flags=re.IGNORECASE)
+        if m:
+            head = str(m.group(1) or "").strip()
+            base = str(m.group(2) or "").strip()
+            break
+    if not head:
+        m = re.search(r"branch\s+([A-Za-z0-9_./-]+)", txt, flags=re.IGNORECASE)
+        if m:
+            head = str(m.group(1) or "").strip()
+    if not base:
+        m = re.search(r"base(?:_branch)?\s*[:=]?\s*([A-Za-z0-9_./-]+)", txt, flags=re.IGNORECASE)
+        if m:
+            base = str(m.group(1) or "").strip()
+    if not base:
+        m = re.search(r"\bmain\b|\bmaster\b|\bproduction\b|\bprod\b", txt, flags=re.IGNORECASE)
+        if m:
+            base = str(m.group(0) or "").strip()
+    return head, (base or default_branch)
+
+
+def _extract_pr_number_from_message(message: str) -> int:
+    txt = (message or "").strip()
+    if not txt:
+        return 0
+    m = re.search(r"\bpr\s*#\s*(\d+)\b", txt, flags=re.IGNORECASE)
+    if not m:
+        m = re.search(r"\bpull request\s*#?\s*(\d+)\b", txt, flags=re.IGNORECASE)
+    try:
+        return int(m.group(1)) if m else 0
+    except Exception:
+        return 0
+
+
+def _github_branch_head_sha(repo: str, branch: str) -> str:
+    repo = str(repo or "").strip()
+    branch = str(branch or "").strip()
+    if not repo or not branch:
+        return ""
+    url = f"https://api.github.com/repos/{repo}/branches/{_urllib_parse.quote(branch, safe='')}"
+    status, body = _github_api_json("GET", url)
+    if status != 200 or not isinstance(body, dict):
+        return ""
+    commit = body.get("commit") if isinstance(body.get("commit"), dict) else {}
+    return str(commit.get("sha") or "").strip()
+
+
+def _github_pr_by_number(repo: str, pr_number: int) -> Dict[str, Any]:
+    if not repo or pr_number <= 0:
+        return {"ok": False, "message": "pr_number_missing"}
+    url = f"https://api.github.com/repos/{repo}/pulls/{int(pr_number)}"
+    status, body = _github_api_json("GET", url)
+    ok = status == 200 and isinstance(body, dict)
+    return {"ok": ok, "status": status, "body": body if isinstance(body, dict) else {}, "message": "" if ok else str((body or {}).get("message") or f"pull_fetch_failed_status_{status}")}
+
+
+def _github_find_pull_by_head(repo: str, head: str, base: str) -> Dict[str, Any]:
+    repo = str(repo or "").strip()
+    head = str(head or "").strip()
+    base = str(base or "").strip()
+    owner = _repo_owner(repo)
+    if not repo or not head:
+        return {"ok": False, "message": "repo_or_head_missing"}
+    q = _urllib_parse.urlencode({"state": "open", "head": f"{owner}:{head}", "base": base or _default_branch()})
+    url = f"https://api.github.com/repos/{repo}/pulls?{q}"
+    status, body = _github_api_json("GET", url)
+    if status != 200 or not isinstance(body, list):
+        return {"ok": False, "message": f"pull_list_failed_status_{status}", "body": body}
+    first = body[0] if body else {}
+    return {"ok": bool(first), "body": first if isinstance(first, dict) else {}, "message": "" if first else "pull_not_found"}
+
+
+def _github_compare(repo: str, base: str, head: str) -> Dict[str, Any]:
+    repo = str(repo or "").strip()
+    base = str(base or "").strip()
+    head = str(head or "").strip()
+    if not repo or not base or not head:
+        return {"ok": False, "message": "repo_base_head_missing", "files_changed": []}
+    url = f"https://api.github.com/repos/{repo}/compare/{_urllib_parse.quote(base, safe='')}...{_urllib_parse.quote(head, safe='')}"
+    status, body = _github_api_json("GET", url)
+    if status != 200 or not isinstance(body, dict):
+        message = str((body or {}).get("message") or f"compare_failed_status_{status}")
+        return {"ok": False, "status": status, "message": message, "body": body, "files_changed": []}
+    files = body.get("files") if isinstance(body.get("files"), list) else []
+    file_names = []
+    for item in files:
+        if not isinstance(item, dict):
+            continue
+        filename = str(item.get("filename") or "").strip()
+        if filename:
+            file_names.append(filename)
+    commits = body.get("commits") if isinstance(body.get("commits"), list) else []
+    latest_commit_sha = ""
+    if commits and isinstance(commits[-1], dict):
+        latest_commit_sha = str(commits[-1].get("sha") or "").strip()
+    if not latest_commit_sha:
+        latest_commit_sha = _github_branch_head_sha(repo, head)
+    return {
+        "ok": True,
+        "status": status,
+        "body": body,
+        "ahead_by": int(body.get("ahead_by") or 0),
+        "behind_by": int(body.get("behind_by") or 0),
+        "files_changed": file_names,
+        "files_count": len(file_names),
+        "commit_sha": latest_commit_sha,
+        "html_url": str(body.get("html_url") or "").strip(),
+    }
+
+
+def _github_compare_status_payload(message: str, visible_agent: str, repository_details: List[Dict[str, Any]]) -> Dict[str, Any]:
+    repo_target = _resolve_repo_target_from_message(message)
+    default_branch = _default_branch()
+    pr_number = _extract_pr_number_from_message(message)
+    head, base = _extract_branch_names_from_message(message)
+    pr_payload: Dict[str, Any] = {}
+    pr_url = ""
+    merge_executed = False
+
+    if pr_number > 0:
+        pr_lookup = _github_pr_by_number(repo_target, pr_number)
+        if pr_lookup.get("ok"):
+            pr_payload = pr_lookup.get("body") if isinstance(pr_lookup.get("body"), dict) else {}
+            head_ref = pr_payload.get("head") if isinstance(pr_payload.get("head"), dict) else {}
+            base_ref = pr_payload.get("base") if isinstance(pr_payload.get("base"), dict) else {}
+            head = head or str(head_ref.get("ref") or "").strip()
+            base = base or str(base_ref.get("ref") or "").strip() or default_branch
+            pr_url = str(pr_payload.get("html_url") or "").strip()
+            merge_executed = bool(pr_payload.get("merged"))
+        else:
+            return {
+                "ok": False,
+                "service": "orion_internal",
+                "mode": "github_compare_status",
+                "event": "GITHUB_COMPARE_STATUS_FAILED",
+                "provider": "github",
+                "visible_agent": visible_agent,
+                "repo_target": repo_target,
+                "message": str(pr_lookup.get("message") or "pull_request_not_found"),
+            }
+
+    if not head:
+        return {
+            "ok": False,
+            "service": "orion_internal",
+            "mode": "github_compare_status",
+            "event": "GITHUB_COMPARE_STATUS_FAILED",
+            "provider": "github",
+            "visible_agent": visible_agent,
+            "repo_target": repo_target,
+            "message": "head_branch_not_detected",
+        }
+
+    compare_payload = _github_compare(repo_target, base or default_branch, head)
+    if not compare_payload.get("ok"):
+        return {
+            "ok": False,
+            "service": "orion_internal",
+            "mode": "github_compare_status",
+            "event": "GITHUB_COMPARE_STATUS_FAILED",
+            "provider": "github",
+            "visible_agent": visible_agent,
+            "repo_target": repo_target,
+            "branch_name": head,
+            "base_branch": base or default_branch,
+            "message": str(compare_payload.get("message") or "compare_failed"),
+        }
+
+    if not pr_number:
+        pr_lookup = _github_find_pull_by_head(repo_target, head, base or default_branch)
+        if pr_lookup.get("ok"):
+            pr_payload = pr_lookup.get("body") if isinstance(pr_lookup.get("body"), dict) else {}
+            pr_number = int(pr_payload.get("number") or 0)
+            pr_url = str(pr_payload.get("html_url") or "").strip()
+            merge_executed = bool(pr_payload.get("merged"))
+    commit_sha = str(compare_payload.get("commit_sha") or "").strip()
+    files_changed = list(compare_payload.get("files_changed") or [])
+    return {
+        "ok": True,
+        "service": "orion_internal",
+        "mode": "github_compare_status",
+        "event": "GITHUB_COMPARE_STATUS_OK",
+        "provider": "github",
+        "visible_agent": visible_agent,
+        "repo": repo_target,
+        "repo_target": repo_target,
+        "backend_repo": _github_repo(),
+        "frontend_repo": _github_repo_web(),
+        "repository_details": repository_details,
+        "branch": head,
+        "branch_name": head,
+        "base_branch": base or default_branch,
+        "compare_ok": True,
         "ahead_by": int(compare_payload.get("ahead_by") or 0),
         "behind_by": int(compare_payload.get("behind_by") or 0),
         "files_changed": files_changed,
