@@ -6297,6 +6297,32 @@ def _orion_catalog_appendix_request_flags(user_text: str) -> Dict[str, Any]:
     }
 
 
+def _orion_operational_maturity_request_flags(user_text: str) -> Dict[str, Any]:
+    txt = (user_text or "").strip().lower()
+    if not txt:
+        return {"requested": False}
+
+    maturity_patterns = [
+        r"maturidade\s+operacional",
+        r"prontid[aã]o\s+operacional",
+        r"operacionalmente\s+madur",
+        r"runtime\s+operacionalmente\s+madur",
+        r"rastreabil",
+        r"observabil",
+        r"governan[cç]a",
+        r"separa[cç][aã]o\s+entre\s+orquestra",
+        r"separa[cç][aã]o\s+entre\s+agente\s+vis[ií]vel\s+e\s+executor",
+        r"lacunas\s+de\s+rastreabilidade",
+        r"lacunas\s+de\s+observabilidade",
+        r"lacunas\s+de\s+governan[cç]a",
+        r"crit[eé]rios\s+de\s+prontid[aã]o\s+operacional",
+        r"auditoria\s+interna\s+de\s+maturidade",
+    ]
+    return {
+        "requested": any(re.search(p, txt, flags=re.IGNORECASE) for p in maturity_patterns),
+    }
+
+
 def _pick_target_agent_by_slug(target_agents: Optional[List[Dict[str, Any]]], slug: str) -> Optional[Dict[str, Any]]:
     wanted = _canonical_runtime_agent_slug(slug)
     if not wanted:
@@ -6502,6 +6528,124 @@ def _build_runtime_source_audit_text(
     lines.append(f"- divergências encontradas: {'sim' if divergences else 'não'}")
 
     return "\n".join(lines)
+
+
+def _build_runtime_operational_maturity_text(
+    db: Optional[Session] = None,
+    org: Optional[str] = None,
+    user_text: Optional[str] = None,
+) -> str:
+    catalog = _capability_inventory_payload(db=db, org=org, include_hidden=True, privileged=True)
+    catalog = catalog if isinstance(catalog, list) else []
+
+    def _safe(v: Any, default: str = "n/d") -> str:
+        s = str(v or "").strip()
+        return s or default
+
+    def _by_slug(slug: str) -> Optional[Dict[str, Any]]:
+        wanted = _safe(slug, "").lower()
+        for item in catalog:
+            if not isinstance(item, dict):
+                continue
+            if _safe(item.get("slug"), "").lower() == wanted:
+                return item
+        return None
+
+    orkio = _by_slug("orkio")
+    orion = _by_slug("orion")
+    auditor = _by_slug("auditor")
+    architect = _by_slug("architect")
+    devops = _by_slug("devops")
+    sre = _by_slug("sre")
+    security = _by_slug("security")
+    stage_manager = _by_slug("stage_manager")
+    memory_ops = _by_slug("memory_ops")
+    gitops = _by_slug("gitops")
+
+    has_execution = any(x is not None for x in [devops, sre, gitops])
+    has_audit = auditor is not None
+    has_arch = architect is not None
+    has_security = security is not None
+    has_memory = any(x is not None for x in [stage_manager, memory_ops])
+    has_visible_split = orkio is not None and orion is not None and has_execution
+
+    maturity_level = "intermediário"
+    if has_execution and has_audit and has_arch and has_security and has_memory and has_visible_split:
+        maturity_level = "intermediário-alto"
+
+    lines = []
+    lines.append("A. NÍVEL ATUAL DE MATURIDADE OPERACIONAL")
+    lines.append(f"- classificação atual: {maturity_level}.")
+    lines.append("- O runtime demonstra maturidade estrutural na composição de papéis, mas ainda não prova maturidade plena de rastreabilidade de execução ponta a ponta.")
+    lines.append("- A base factual desta leitura vem do catálogo técnico privilegiado já validado, sem repetir o inventário bruto como saída principal.")
+
+    lines.append("")
+    lines.append("B. PONTOS FORTES JÁ CONFIRMADOS")
+    if orkio is not None:
+        lines.append("- Existe orquestrador visível real: Orkio.")
+    if orion is not None:
+        lines.append("- Existe persona técnica visível distinta: Orion.")
+    if has_execution:
+        lines.append("- Existe camada de execução/operação real: DevOps, SRE e GitOps.")
+    if has_audit:
+        lines.append("- Existe função de auditoria explícita: Auditor.")
+    if has_arch:
+        lines.append("- Existe função de arquitetura explícita: Architect.")
+    if has_security:
+        lines.append("- Existe função de segurança explícita: Security.")
+    if has_memory:
+        lines.append("- Existe camada de coordenação/memória operacional: Stage Manager e Memory Ops.")
+    lines.append("- O catálogo privilegiado está consistente com o seed oculto e sem divergências detectadas entre fontes.")
+
+    lines.append("")
+    lines.append("C. RISCOS ESTRUTURAIS AINDA ABERTOS")
+    lines.append("- Risco de confusão entre orquestrador visível, executor real e agente assinante final.")
+    lines.append("- Risco de atribuição excessiva de execução ao agente visível quando a execução real pode ocorrer em outra camada interna.")
+    lines.append("- Risco de leitura incompleta de responsabilidade sem receipts explícitos por etapa operacional.")
+
+    lines.append("")
+    lines.append("D. LACUNAS DE RASTREABILIDADE")
+    lines.append("- O catálogo confirma presença e papel, mas não comprova sozinho qual agente executou cada etapa de uma resposta específica.")
+    lines.append("- Ainda falta trilha operacional explícita por mensagem, com receipts ou dispatch lineage por função.")
+    lines.append("- Ainda falta separar, na resposta final persistida, executor real, auditor interveniente e signer visível.")
+
+    lines.append("")
+    lines.append("E. LACUNAS DE OBSERVABILIDADE")
+    lines.append("- A observabilidade disponível no catálogo é estrutural, não transacional.")
+    lines.append("- Não há, nesta saída, telemetria por passo mostrando quem orquestrou, quem executou, quem auditou e quem consolidou.")
+    lines.append("- A maturidade sobe bastante quando o runtime expõe eventos operacionais por agente e por handoff, sem reabrir fan-out visível ao usuário.")
+
+    lines.append("")
+    lines.append("F. LACUNAS DE GOVERNANÇA")
+    lines.append("- Falta uma política operacional mais explícita para distinguir papel visível, papel executor, papel auditor e papel de consolidação.")
+    lines.append("- Falta um padrão estável de accountability por resposta persistida.")
+    lines.append("- Falta critério formal exposto para quando uma resposta é apenas consultiva e quando houve execução operacional real.")
+
+    lines.append("")
+    lines.append("G. MELHORIAS PRIORITÁRIAS")
+    lines.append("1. Expor receipts internos por etapa: orchestration, execution, audit, consolidation e signer.")
+    lines.append("2. Persistir metadados separados de executor real, auditor participante e persona visível.")
+    lines.append("3. Criar trilha de observabilidade por runtime request, sem obrigar o usuário a ler logs brutos.")
+    lines.append("4. Formalizar política de governança para distinguir consulta, execução e auditoria.")
+    lines.append("5. Manter o catálogo técnico privilegiado como fonte estrutural e usar um relatório de maturidade como camada executiva distinta.")
+
+    lines.append("")
+    lines.append("H. CRITÉRIOS DE PRONTIDÃO OPERACIONAL")
+    lines.append("- papéis técnicos reais detectados e consistentes entre fontes")
+    lines.append("- separação clara entre orquestrador, executor, auditor e signer")
+    lines.append("- receipts internos por request")
+    lines.append("- rastreabilidade por mensagem persistida")
+    lines.append("- observabilidade suficiente para provar cadeia de execução")
+    lines.append("- governança explícita para consulta vs execução real")
+
+    lines.append("")
+    lines.append("I. VEREDITO FINAL")
+    lines.append("- O runtime já é estruturalmente organizado e tecnicamente promissor.")
+    lines.append("- Ainda não está em maturidade operacional plena, porque a cadeia de execução real ainda não fica completamente comprovada na superfície da resposta.")
+    lines.append("- Veredito: base forte, maturidade estrutural confirmada, maturidade operacional plena ainda depende de receipts, rastreabilidade e governança explícita.")
+
+    return "\n".join(lines)
+
 
 def _build_capability_inventory_text(
     db: Optional[Session] = None,
@@ -9737,7 +9881,8 @@ def chat(
 
     blocked_reply = _block_if_sensitive(inp.message)
     orion_self_knowledge_flags = _orion_self_knowledge_request_flags(inp.message)
-    if orion_self_knowledge_flags.get("requested"):
+    orion_operational_maturity_flags = _orion_operational_maturity_request_flags(inp.message)
+    if orion_self_knowledge_flags.get("requested") or orion_operational_maturity_flags.get("requested"):
         blocked_reply = None
     active_founder_guidance = _get_founder_guidance(org, tid, inp.message)
 
@@ -9770,7 +9915,7 @@ def chat(
 
     # PATCH27_12AY — Orion self-knowledge hard gate BEFORE any fan-out
     forced_orion_agent = None
-    if orion_self_knowledge_flags.get("requested"):
+    if orion_self_knowledge_flags.get("requested") or orion_operational_maturity_flags.get("requested"):
         forced_orion_agent = (
             alias_to_agent.get("orion")
             or alias_to_agent.get("orion cto")
@@ -10007,8 +10152,15 @@ def chat(
                     )
                 else:
                     orion_self_knowledge_flags = _orion_self_knowledge_request_flags(inp.message)
+                    orion_operational_maturity_flags = _orion_operational_maturity_request_flags(inp.message)
                     hidden_catalog_flags = _hidden_catalog_request_flags(inp.message)
-                    if orion_self_knowledge_flags.get("requested") and _canonical_runtime_agent_slug(final_signer_agent_name) == "orion":
+                    if orion_operational_maturity_flags.get("requested") and _canonical_runtime_agent_slug(final_signer_agent_name) == "orion":
+                        capability_inventory_answer = _build_runtime_operational_maturity_text(
+                            db=db,
+                            org=org,
+                            user_text=inp.message,
+                        )
+                    elif orion_self_knowledge_flags.get("requested") and _canonical_runtime_agent_slug(final_signer_agent_name) == "orion":
                         capability_inventory_answer = _build_capability_inventory_text(
                             db=db,
                             org=org,
@@ -13227,7 +13379,8 @@ async def chat_stream(
 
     blocked_reply = _block_if_sensitive(message)
     orion_self_knowledge_flags = _orion_self_knowledge_request_flags(message)
-    if orion_self_knowledge_flags.get("requested"):
+    orion_operational_maturity_flags = _orion_operational_maturity_request_flags(message)
+    if orion_self_knowledge_flags.get("requested") or orion_operational_maturity_flags.get("requested"):
         blocked_reply = None
     active_founder_guidance = _get_founder_guidance(org, tid, message)
 
@@ -13259,7 +13412,7 @@ async def chat_stream(
 
     # PATCH27_12AY — Orion self-knowledge hard gate BEFORE any fan-out
     forced_orion_row = None
-    if orion_self_knowledge_flags.get("requested"):
+    if orion_self_knowledge_flags.get("requested") or orion_operational_maturity_flags.get("requested"):
         forced_orion_row = (
             alias_to_agent.get("orion")
             or alias_to_agent.get("orion cto")
@@ -13684,8 +13837,15 @@ async def chat_stream(
                             )
                         else:
                             orion_self_knowledge_flags = _orion_self_knowledge_request_flags(message)
+                            orion_operational_maturity_flags = _orion_operational_maturity_request_flags(message)
                             hidden_catalog_flags = _hidden_catalog_request_flags(message)
-                            if orion_self_knowledge_flags.get("requested") and _canonical_runtime_agent_slug(ag_name) == "orion":
+                            if orion_operational_maturity_flags.get("requested") and _canonical_runtime_agent_slug(ag_name) == "orion":
+                                capability_inventory_answer = _build_runtime_operational_maturity_text(
+                                    db=db,
+                                    org=org,
+                                    user_text=message,
+                                )
+                            elif orion_self_knowledge_flags.get("requested") and _canonical_runtime_agent_slug(ag_name) == "orion":
                                 capability_inventory_answer = _build_capability_inventory_text(
                                     db=db,
                                     org=org,
