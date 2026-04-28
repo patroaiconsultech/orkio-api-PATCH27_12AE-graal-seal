@@ -133,6 +133,16 @@ def _safe_patch_policy() -> Dict[str, Any]:
         "evolution_loop_enabled": _evolution_enabled(),
         "write_allowed_agents": _allowed_write_agents(),
         "read_allowed_agents": _allowed_read_agents(),
+        "require_explicit_pr_approval": _bool_env("REQUIRE_EXPLICIT_PR_APPROVAL", True),
+        "transactional_flow_required": True,
+        "receipt_required_steps": [
+            "branch_created",
+            "files_written",
+            "commit_created",
+            "compare_ok",
+            "pull_request_opened",
+        ],
+        "pr_open_requires_branch_and_commit": True,
     }
 
 
@@ -1303,6 +1313,7 @@ def safe_patch_plan(inp: OrionRuntimeIn) -> Dict[str, Any]:
             "3. Orion prepara branch e arquivos",
             "4. Aprovação humana explícita",
             "5. Execução em branch + PR",
+            "6. Receipts transacionais obrigatórios entre branch, patch, commit, compare e PR",
         ],
         "write_agent": "orion",
         "policy": _safe_patch_policy(),
