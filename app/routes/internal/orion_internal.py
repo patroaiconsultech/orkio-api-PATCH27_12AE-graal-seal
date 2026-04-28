@@ -14,9 +14,9 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/internal/orion", tags=["orion_internal"])
 
-PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BN_V3"
+PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BO_V1"
 PATCH_FEATURE = "github_pr_compare_status_resolver"
-PATCH_EXPECTED_BEHAVIOR = "github_compare_and_pr_status_requests_resolve_with_repo_aliases_natural_compare_and_structured_not_found"
+PATCH_EXPECTED_BEHAVIOR = "github_compare_and_pr_status_requests_resolve_with_repo_aliases_natural_compare_and_ok_surface_for_missing_pr"
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -425,7 +425,13 @@ def _github_pr_by_number(repo: str, pr_number: int) -> Dict[str, Any]:
     url = f"https://api.github.com/repos/{repo}/pulls/{int(pr_number)}"
     status, body = _github_api_json("GET", url)
     ok = status == 200 and isinstance(body, dict)
-    return {"ok": ok, "status": status, "body": body if isinstance(body, dict) else {}, "message": "" if ok else str((body or {}).get("message") or f"pull_fetch_failed_status_{status}")}
+    if ok:
+        message = ""
+    elif status == 404:
+        message = "pull_request_not_found"
+    else:
+        message = str((body or {}).get("message") or f"pull_fetch_failed_status_{status}")
+    return {"ok": ok, "status": status, "body": body if isinstance(body, dict) else {}, "message": message}
 
 
 def _github_find_pull_by_head(repo: str, head: str, base: str) -> Dict[str, Any]:
@@ -439,7 +445,7 @@ def _github_find_pull_by_head(repo: str, head: str, base: str) -> Dict[str, Any]
     url = f"https://api.github.com/repos/{repo}/pulls?{q}"
     status, body = _github_api_json("GET", url)
     if status != 200 or not isinstance(body, list):
-        return {"ok": False, "message": f"pull_list_failed_status_{status}", "body": body}
+        return {"ok": False, "message": ("pull_request_not_found" if status == 404 else f"pull_list_failed_status_{status}"), "body": body}
     first = body[0] if body else {}
     return {"ok": bool(first), "body": first if isinstance(first, dict) else {}, "message": "" if first else "pull_not_found"}
 
@@ -508,7 +514,7 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
                 "ok": True,
                 "service": "orion_internal",
                 "mode": "github_compare_status",
-                "event": "GITHUB_COMPARE_STATUS_NOT_FOUND",
+                "event": "GITHUB_COMPARE_STATUS_OK",
                 "provider": "github",
                 "visible_agent": visible_agent,
                 "repo": repo_target,
@@ -524,8 +530,9 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
                 "deploy_executed": False,
                 "pr_number": int(pr_number or 0),
                 "pr_found": False,
+                "resolution": "pull_request_not_found",
                 "message": "pull_request_not_found",
-                "github_error": str(pr_lookup.get("message") or "pull_request_not_found"),
+                "github_error": "pull_request_not_found",
                 "generated_at": _now_ts(),
             }
 
@@ -937,7 +944,13 @@ def _github_pr_by_number(repo: str, pr_number: int) -> Dict[str, Any]:
     url = f"https://api.github.com/repos/{repo}/pulls/{int(pr_number)}"
     status, body = _github_api_json("GET", url)
     ok = status == 200 and isinstance(body, dict)
-    return {"ok": ok, "status": status, "body": body if isinstance(body, dict) else {}, "message": "" if ok else str((body or {}).get("message") or f"pull_fetch_failed_status_{status}")}
+    if ok:
+        message = ""
+    elif status == 404:
+        message = "pull_request_not_found"
+    else:
+        message = str((body or {}).get("message") or f"pull_fetch_failed_status_{status}")
+    return {"ok": ok, "status": status, "body": body if isinstance(body, dict) else {}, "message": message}
 
 
 def _github_find_pull_by_head(repo: str, head: str, base: str) -> Dict[str, Any]:
@@ -951,7 +964,7 @@ def _github_find_pull_by_head(repo: str, head: str, base: str) -> Dict[str, Any]
     url = f"https://api.github.com/repos/{repo}/pulls?{q}"
     status, body = _github_api_json("GET", url)
     if status != 200 or not isinstance(body, list):
-        return {"ok": False, "message": f"pull_list_failed_status_{status}", "body": body}
+        return {"ok": False, "message": ("pull_request_not_found" if status == 404 else f"pull_list_failed_status_{status}"), "body": body}
     first = body[0] if body else {}
     return {"ok": bool(first), "body": first if isinstance(first, dict) else {}, "message": "" if first else "pull_not_found"}
 
