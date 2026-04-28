@@ -1231,9 +1231,9 @@ def _is_production_env() -> bool:
     return _app_env() == "production"
 
 APP_VERSION = "2.4.0"
-PATCH_SENTINEL = "FOUNDER_APPROVAL_RUNTIME_SENTINEL_12BE_V1"
-PATCH_FEATURE = "founder_approval_runtime_sentinel"
-PATCH_EXPECTED_BEHAVIOR = "startup_and_sse_expose_explicit_patch_identity"
+PATCH_SENTINEL = "PREMIUM_AUDIT_ROUTING_SENTINEL_12BF_V1"
+PATCH_FEATURE = "premium_audit_routing_guard"
+PATCH_EXPECTED_BEHAVIOR = "revoke_and_premium_read_only_multiagent_routing"
 RAG_MODE = "keyword"
 
 def patch_id() -> str:
@@ -6056,7 +6056,11 @@ def _github_write_authorization_flags(user_text: str) -> Dict[str, Any]:
         return flags
 
     flags["deny_execution"] = bool(
-        re.search(r"(n[ãa]o\s+autorizo\s+execu[cç][ãa]o|revogo\s+autoriza[cç][ãa]o)", low, flags=re.IGNORECASE)
+        re.search(
+            r"(n[ãa]o\s+autorizo\s+execu[cç][ãa]o|revog\w*\s+(?:toda\s+)?autoriza[cç][ãa]o|cancel\w*\s+(?:a\s+)?autoriza[cç][ãa]o|revog\w*\s+aprova[cç][ãa]o)",
+            low,
+            flags=re.IGNORECASE,
+        )
     )
     flags["deny_merge"] = bool(re.search(r"(n[ãa]o\s+autorizo\s+merge)", low, flags=re.IGNORECASE))
 
@@ -6303,7 +6307,17 @@ def _build_github_write_response_text(
 
     if auth_flags.get("deny_execution"):
         _github_write_clear_approval(org, thread_id, payload)
-        return "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: autorização_revogada"
+        _github_write_clear_execution_receipts(org, thread_id, payload)
+        cleared_snapshot = _github_write_policy_snapshot(org=org, thread_id=thread_id, payload=payload, db=db)
+        lines = [
+            "AUTORIZAÇÃO DE ESCRITA REVOGADA.",
+            "- status: approval_cleared",
+            "- confirmation_source: chat",
+            "- merge: não autorizado",
+            "",
+            _format_github_write_policy_text(cleared_snapshot, thread_id=thread_id, payload=payload),
+        ]
+        return "\n".join(lines)
 
     if auth_flags.get("grant"):
         if not can_govern:
@@ -6674,6 +6688,29 @@ def _canonicalize_platform_audit_runtime_message(
     )
 
 
+def _canonicalize_premium_platform_audit_runtime_message(
+    user_text: str,
+    *,
+    requested_specialists: Optional[List[str]] = None,
+) -> str:
+    specialists = [str(x).strip().lower() for x in (requested_specialists or []) if str(x).strip()]
+    if not specialists:
+        specialists = ["auditor", "cto", "orion", "chris", "architect", "devops", "security", "memory_ops", "stage_manager"]
+
+    specialist_csv = ", ".join(specialists)
+    original = (user_text or "").strip()
+
+    return (
+        "AUDITORIA PREMIUM MULTIAGENTE READ-ONLY. "
+        "Sem GitHub, sem branch, sem patch, sem commit, sem PR, sem merge, sem deploy e sem alteração de banco. "
+        f"Acione a equipe técnica interna com especialistas: {specialist_csv}. "
+        "Execute varredura profunda da plataforma inteira e devolva uma resposta estruturada com as seções A, B, C, D, E, F, G, H, I e J. "
+        "Priorize onboarding, proposta de valor, UX do chat, colaboração entre agentes, performance percebida, voz/realtime, estados vazios, confiança, billing, mobile/PWA, memória, consistência visual premium e gargalos backend que afetam a experiência final. "
+        "Bloqueie totalmente qualquer trilha de escrita governada do GitHub durante esta auditoria. "
+        f"Pedido original do usuário: {original}"
+    )
+
+
 
 
 def _should_force_runtime_dispatch_over_catalog(
@@ -6711,8 +6748,8 @@ def _should_force_runtime_dispatch_over_catalog(
         runtime_operation.get("force_dispatch")
         or runtime_hints.get("force_runtime_dispatch")
         or execution_depth == "dispatch"
-        or runtime_kind == "platform_audit"
-        or response_profile == "orion_objective_diagnostic"
+        or runtime_kind in {"platform_audit", "premium_platform_audit"}
+        or response_profile in {"orion_objective_diagnostic", "premium_platform_audit"}
     )
 
 def _apply_forced_orion_runtime_dispatch_enrichment(
@@ -7850,6 +7887,19 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     repository_details = result.get("repository_details") if isinstance(result.get("repository_details"), list) else None
     backend_root_entries = result.get("backend_root_entries") if isinstance(result.get("backend_root_entries"), list) else None
     frontend_root_entries = result.get("frontend_root_entries") if isinstance(result.get("frontend_root_entries"), list) else None
+    executive_verdict = (result.get("executive_verdict") or "").strip()
+    findings_by_specialty = result.get("findings_by_specialty") if isinstance(result.get("findings_by_specialty"), dict) else None
+    top_improvements = result.get("top_improvements") if isinstance(result.get("top_improvements"), list) else None
+    quick_wins_24h = result.get("quick_wins_24h") if isinstance(result.get("quick_wins_24h"), list) else None
+    improvements_7d = result.get("improvements_7d") if isinstance(result.get("improvements_7d"), list) else None
+    improvements_30d = result.get("improvements_30d") if isinstance(result.get("improvements_30d"), list) else None
+    premium_blockers = result.get("premium_blockers") if isinstance(result.get("premium_blockers"), list) else None
+    primary_product_adjustment = (result.get("primary_product_adjustment") or "").strip()
+    primary_frontend_adjustment = (result.get("primary_frontend_adjustment") or "").strip()
+    primary_backend_adjustment = (result.get("primary_backend_adjustment") or "").strip()
+    principal_premium_blocker = (result.get("principal_premium_blocker") or "").strip()
+    github_write_blocked = result.get("github_write_blocked")
+    specialist_fanout_applied = result.get("specialist_fanout_applied")
 
     if executive_body_only:
         compact_parts = ["Diagnóstico executivo com confirmação operacional verificável."]
@@ -7951,6 +8001,58 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     if technical_summary:
         parts.append("technical_summary:")
         parts.append(technical_summary)
+
+    if report_format == "premium_platform_audit_v1" or event == "PLATFORM_PREMIUM_AUDIT_EXECUTED":
+        if selected_specialists:
+            parts.append("selected_specialists:")
+            parts.append(", ".join(str(item) for item in selected_specialists[:20]))
+        if github_write_blocked is not None:
+            parts.append(f"github_write_blocked: {bool(github_write_blocked)}")
+        if specialist_fanout_applied is not None:
+            parts.append(f"specialist_fanout_applied: {bool(specialist_fanout_applied)}")
+        if scope:
+            parts.append(f"audit_scope: {scope}")
+        if execution_mode := (result.get("execution_mode") or "").strip():
+            parts.append(f"execution_mode: {execution_mode}")
+
+        if executive_verdict:
+            parts.append("A. veredito executivo")
+            parts.append(executive_verdict)
+        if findings_by_specialty:
+            parts.append("B. achados por especialidade")
+            for key, value in list(findings_by_specialty.items())[:20]:
+                parts.append(f"- {str(key)}: {str(value)}")
+        if top_improvements:
+            parts.append("C. top 15 melhorias prioritárias")
+            parts.extend(f"- {str(item)}" for item in top_improvements[:15])
+        if quick_wins_24h:
+            parts.append("D. quick wins de 24 horas")
+            parts.extend(f"- {str(item)}" for item in quick_wins_24h[:15])
+        if improvements_7d:
+            parts.append("E. melhorias de 7 dias")
+            parts.extend(f"- {str(item)}" for item in improvements_7d[:15])
+        if improvements_30d:
+            parts.append("F. melhorias estruturais de 30 dias")
+            parts.extend(f"- {str(item)}" for item in improvements_30d[:15])
+        if premium_blockers:
+            parts.append("G. riscos que impedem experiência premium")
+            parts.extend(f"- {str(item)}" for item in premium_blockers[:15])
+        if primary_product_adjustment:
+            parts.append("H. principal ajuste de produto")
+            parts.append(primary_product_adjustment)
+        if primary_frontend_adjustment:
+            parts.append("I. principal ajuste de frontend")
+            parts.append(primary_frontend_adjustment)
+        if primary_backend_adjustment:
+            parts.append("J. principal ajuste de backend")
+            parts.append(primary_backend_adjustment)
+        if principal_premium_blocker:
+            parts.append("principal_premium_blocker:")
+            parts.append(principal_premium_blocker)
+        if final_consolidation:
+            parts.append("final_consolidation:")
+            parts.append(final_consolidation)
+        return "\n".join([str(x).rstrip() for x in parts if str(x).strip()])
 
     if report_format in {"dispatch_audit_v1", "dispatch_audit_v2", "orion_diagnostic_v1", "orion_diagnostic_prose_v2", "dispatch_executive_followup_v1", "dispatch_progressive_followup_v1"} or event == "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED" or event == "ORION_RUNTIME_DIAGNOSTIC_EXECUTED" or execution_depth == "dispatch":
         suppress_dispatch_detail_blocks = compact_dispatch_details or executive_body_only or render_strategy in {"dispatch_executive_compact", "dispatch_executive_replace", "dispatch_progressive_compact"}
@@ -9805,7 +9907,7 @@ def _coerce_platform_audit_dispatch_result(
         or ""
     ).strip().lower()
 
-    if runtime_kind != "platform_audit":
+    if runtime_kind not in {"platform_audit", "premium_platform_audit"}:
         return normalized
     if not bool(normalized.get("success")):
         return normalized
@@ -9832,20 +9934,25 @@ def _coerce_platform_audit_dispatch_result(
         visible_only_agent == "orion"
         or response_profile == "orion_objective_diagnostic"
     )
+    premium_audit = runtime_kind == "premium_platform_audit" or response_profile == "premium_platform_audit"
 
     normalized["event"] = (
-        "ORION_RUNTIME_DIAGNOSTIC_EXECUTED"
+        "PLATFORM_PREMIUM_AUDIT_EXECUTED"
+        if premium_audit
+        else "ORION_RUNTIME_DIAGNOSTIC_EXECUTED"
         if direct_orion
         else "PLATFORM_SELF_AUDIT_DISPATCH_EXECUTED"
     )
     normalized["status"] = "executed"
     normalized["execution_depth"] = "dispatch"
     normalized["report_format"] = (
-        "orion_diagnostic_v1" if direct_orion else "dispatch_audit_v1"
+        "premium_platform_audit_v1"
+        if premium_audit
+        else "orion_diagnostic_v1" if direct_orion else "dispatch_audit_v1"
     )
     normalized["provider"] = str(normalized.get("provider") or "platform").strip() or "platform"
     normalized["visible_agent"] = "orion" if direct_orion else str(normalized.get("visible_agent") or "orion").strip() or "orion"
-    normalized["selected_specialists"] = list(normalized.get("selected_specialists") or (["orion"] if direct_orion else ["auditor", "cto", "orion", "chris"]))
+    normalized["selected_specialists"] = list(normalized.get("selected_specialists") or (["auditor", "cto", "orion", "chris", "architect", "devops", "security", "memory_ops", "stage_manager"] if premium_audit else ["orion"] if direct_orion else ["auditor", "cto", "orion", "chris"]))
     normalized["dispatch_receipts"] = list(normalized.get("dispatch_receipts") or [
         {
             "agent": "orion" if direct_orion else "platform_audit",
@@ -10127,7 +10234,7 @@ def _execute_capability_if_authorized(
     allow_runtime_execution = (
         runtime_kind.startswith("github_runtime_")
         or required_capability.startswith("github_")
-        or runtime_kind in {"platform_audit", "runtime_scan", "repo_scan", "security_scan", "patch_plan", "squad_list"}
+        or runtime_kind in {"platform_audit", "premium_platform_audit", "runtime_scan", "repo_scan", "security_scan", "patch_plan", "squad_list"}
     )
     if not allow_runtime_execution:
         return None
@@ -10141,6 +10248,11 @@ def _execute_capability_if_authorized(
             requested_specialists=requested_specialists,
             previous_answer_excerpt=str(runtime_operation.get("sticky_last_answer_excerpt") or "").strip(),
             direct_orion=bool(runtime_operation.get("direct_orion", True)),
+        )
+    elif runtime_kind == "premium_platform_audit":
+        txt = _canonicalize_premium_platform_audit_runtime_message(
+            txt,
+            requested_specialists=requested_specialists,
         )
     elif runtime_kind == "platform_audit" and bool(runtime_operation.get("force_dispatch")):
         txt = _canonicalize_platform_audit_runtime_message(
