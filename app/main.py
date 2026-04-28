@@ -891,6 +891,153 @@ _github_write_lock = _threading.Lock()
 _github_write_approval_state: dict = {}  # {(org, thread_id, user_id): approval_dict}
 
 
+_github_write_execution_state: dict = {}  # {(org, thread_id, user_id): execution_receipts}
+
+
+def _github_write_execution_key(org: str, thread_id: Optional[str], payload: Optional[Dict[str, Any]]) -> str:
+    user_id = str((payload or {}).get("sub") or "").strip() or "unknown"
+    return _github_write_approval_key(org, thread_id, user_id)
+
+
+def _github_write_get_execution_receipts(org: str, thread_id: Optional[str], payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    key = _github_write_execution_key(org, thread_id, payload)
+    with _github_write_lock:
+        item = _github_write_execution_state.get(key)
+        return dict(item) if isinstance(item, dict) else {}
+
+
+def _github_write_clear_execution_receipts(org: str, thread_id: Optional[str], payload: Optional[Dict[str, Any]]) -> None:
+    key = _github_write_execution_key(org, thread_id, payload)
+    with _github_write_lock:
+        _github_write_execution_state.pop(key, None)
+
+
+def _github_write_store_execution_receipts(
+    *,
+    org: str,
+    thread_id: Optional[str],
+    payload: Optional[Dict[str, Any]],
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    key = _github_write_execution_key(org, thread_id, payload)
+    with _github_write_lock:
+        current = dict(_github_write_execution_state.get(key) or {})
+        current["updated_at"] = now_ts()
+        provider = str(result.get("provider") or "").strip()
+        repo = str(result.get("repo") or "").strip()
+        branch = str(result.get("branch") or "").strip()
+        base_branch = str(result.get("base_branch") or "").strip()
+        commit_sha = str(result.get("commit_sha") or "").strip()
+        pr_number = int(result.get("pull_request_number") or 0)
+        pr_url = str(result.get("pull_request_url") or "").strip()
+        path = str(result.get("path") or "").strip()
+        files = list(result.get("files") or []) if isinstance(result.get("files"), list) else []
+        if provider:
+            current["provider"] = provider
+        if repo:
+            current["repo"] = repo
+        if branch:
+            current["branch"] = branch
+        if base_branch:
+            current["base_branch"] = base_branch
+        if str(result.get("verified_ref") or "").strip():
+            current["verified_ref"] = str(result.get("verified_ref") or "").strip()
+        if result.get("success") and branch and not pr_number and (result.get("message") or "").lower().find("branch") >= 0:
+            current["branch_created"] = True
+        if result.get("success") and path:
+            current["files_written"] = sorted(set(list(current.get("files_written") or []) + [path]))
+        if result.get("success") and files:
+            current["files_written"] = sorted(set(list(current.get("files_written") or []) + files))
+        if commit_sha:
+            current["commit_sha"] = commit_sha
+            current["commit_created"] = True
+        if result.get("compare_ok") is True:
+            current["compare_ok"] = True
+            current["compare_ahead_by"] = int(result.get("ahead_by") or 0)
+            current["compare_files_count"] = int(result.get("files_count") or 0)
+        if pr_number > 0 or pr_url:
+            current["pull_request_opened"] = bool(result.get("success"))
+            current["pull_request_number"] = pr_number
+            current["pull_request_url"] = pr_url
+        _github_write_execution_state[key] = current
+        return dict(current)
+
+
+def _github_write_transaction_receipts_text(receipts: Optional[Dict[str, Any]]) -> str:
+    receipts = receipts or {}
+    files_written = list(receipts.get("files_written") or [])
+    lines = [
+        "RECEIPTS TRANSACIONAIS GITHUB:",
+        f"- branch_created: {bool(receipts.get('branch_created'))}",
+        f"- branch: {receipts.get('branch') or 'n/d'}",
+        f"- files_written: {', '.join(files_written) if files_written else 'nenhum'}",
+        f"- commit_created: {bool(receipts.get('commit_created'))}",
+        f"- commit_sha: {receipts.get('commit_sha') or 'n/d'}",
+        f"- compare_ok: {bool(receipts.get('compare_ok'))}",
+        f"- pull_request_opened: {bool(receipts.get('pull_request_opened'))}",
+    ]
+    if receipts.get("pull_request_number"):
+        lines.append(f"- pull_request_number: {receipts.get('pull_request_number')}")
+    if receipts.get("pull_request_url"):
+        lines.append(f"- pull_request_url: {receipts.get('pull_request_url')}")
+    return "\n".join(lines)
+
+
+def _github_open_pr_preflight_from_receipts(
+    *,
+    org: str,
+    thread_id: Optional[str],
+    payload: Optional[Dict[str, Any]],
+    pr_req: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    pr_req = dict(pr_req or {})
+    receipts = _github_write_get_execution_receipts(org, thread_id, payload)
+    default_branch = _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main"
+    head = str(pr_req.get("head") or receipts.get("branch") or "").strip()
+    base = str(pr_req.get("base") or receipts.get("base_branch") or default_branch).strip() or default_branch
+    title = str(pr_req.get("title") or "").strip()
+    body = str(pr_req.get("body") or "").strip()
+    missing: List[str] = []
+    if not bool(receipts.get("branch_created")) and not head:
+        missing.append("branch_created")
+    if not bool(receipts.get("files_written")):
+        missing.append("files_written")
+    if not bool(receipts.get("commit_created")) or not str(receipts.get("commit_sha") or "").strip():
+        missing.append("commit_created")
+    if not head:
+        missing.append("head_branch")
+    if not title:
+        title = f"Orkio governed patch: {head or 'branch'} -> {base}"
+    return {
+        "receipts": receipts,
+        "head": head,
+        "base": base,
+        "title": title,
+        "body": body or None,
+        "missing": missing,
+        "ready": not bool(missing),
+    }
+
+
+def _github_build_transaction_incomplete_text(
+    *,
+    org: str,
+    thread_id: Optional[str],
+    payload: Optional[Dict[str, Any]],
+    missing: List[str],
+) -> str:
+    receipts = _github_write_get_execution_receipts(org, thread_id, payload)
+    lines = [
+        "FLUXO GITHUB TRANSACIONAL INCOMPLETO.",
+        f"- missing_receipts: {', '.join(missing) if missing else 'n/d'}",
+        "- required_order: create_branch -> apply_patch/write_file -> prepare_commit -> compare_branches -> open_pr",
+        "",
+        _github_write_transaction_receipts_text(receipts),
+    ]
+    return "\n".join(lines)
+
+
+
 
 def _parse_email_recipients(value: Any) -> List[str]:
     if value is None:
@@ -5828,6 +5975,7 @@ def _github_write_clear_approval(org: str, thread_id: Optional[str], payload: Op
     with _github_write_lock:
         _github_write_approval_state.pop(thread_key, None)
         _github_write_approval_state.pop(userwide_key, None)
+    _github_write_clear_execution_receipts(org, thread_id, payload)
 
 def _github_extract_scoped_files(user_text: str) -> List[str]:
     txt = (user_text or "").strip()
@@ -6054,6 +6202,10 @@ def _format_github_write_policy_text(snapshot: Dict[str, Any]) -> str:
         lines.append(f"- actions_allowed: {', '.join(list(approval.get('actions_allowed') or [])) or 'n/d'}")
         scope_files = list(approval.get("scope_files") or [])
         lines.append(f"- scope_files: {', '.join(scope_files) if scope_files else 'livre'}")
+        receipts = _github_write_get_execution_receipts(snapshot.get("org_slug") or "default", thread_id, payload)
+        if receipts:
+            lines.append("")
+            lines.append(_github_write_transaction_receipts_text(receipts))
     else:
         lines.append("APROVAÇÃO ATIVA:")
         lines.append("- nenhuma")
@@ -6129,6 +6281,7 @@ def _build_github_write_response_text(
         if not can_govern:
             return "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: usuário_sem_permissão_de_governança"
         approval = _github_store_write_approval(org=org, thread_id=thread_id, payload=payload, auth_flags=auth_flags)
+        _github_write_clear_execution_receipts(org, thread_id, payload)
         lines = [
             "AUTORIZAÇÃO DE ESCRITA REGISTRADA.",
             f"- approval_id: {approval.get('approval_id')}",
@@ -7609,6 +7762,7 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
 
     pr_num = int(result.get("pull_request_number") or 0)
     pr_url = (result.get("pull_request_url") or "").strip()
+    transaction_receipts = result.get("transaction_receipts") if isinstance(result.get("transaction_receipts"), dict) else None
     branches = result.get("branches") if isinstance(result.get("branches"), list) else None
     files = result.get("files") if isinstance(result.get("files"), list) else None
     files_read = result.get("files_read") if isinstance(result.get("files_read"), list) else None
@@ -9218,6 +9372,20 @@ def _github_compare_branches(repo: str, base: str, head: str) -> Dict[str, Any]:
     }
 
 
+def _github_compare_branches_with_retry(repo: str, base: str, head: str, *, retries: int = 3, delay_seconds: float = 0.45) -> Dict[str, Any]:
+    last: Dict[str, Any] = {}
+    for attempt in range(max(int(retries), 1)):
+        last = _github_compare_branches(repo, base, head)
+        if last.get("ok"):
+            last["attempts"] = attempt + 1
+            return last
+        try:
+            time.sleep(delay_seconds)
+        except Exception:
+            pass
+    last["attempts"] = max(int(retries), 1)
+    return last
+
 
 def _github_get_ref_sha(repo: str, branch: str) -> tuple[str, Dict[str, Any]]:
     status, body = _github_api_json("GET", f"https://api.github.com/repos/{repo}/git/ref/heads/{branch}", None)
@@ -9343,6 +9511,8 @@ def _github_commit_batch_capability(*, changes: List[Dict[str, str]], branch: Op
 def _github_create_pull_request_capability(*, head: str, base: str, title: str, body: Optional[str] = None, trace_id: Optional[str] = None) -> Dict[str, Any]:
     repo = _clean_env(os.getenv("GITHUB_REPO", ""))
     token = _github_token_value()
+    head = re.sub(r"^refs/heads/", "", (head or "").strip())
+    base = re.sub(r"^refs/heads/", "", (base or "").strip())
     cache_key = _github_action_cache_key(
         "open_pr",
         repo,
@@ -9359,8 +9529,46 @@ def _github_create_pull_request_capability(*, head: str, base: str, title: str, 
         return {"handled": True, "success": False, "provider": "github", "message": "GitHub PR runtime desabilitado por ambiente."}
     if not token or not repo:
         return {"handled": True, "success": False, "provider": "github", "message": "GitHub capability não está habilitada no ambiente."}
+    if not head or not base:
+        return {
+            "handled": True,
+            "success": False,
+            "provider": "github",
+            "repo": repo,
+            "branch": head,
+            "base_branch": base,
+            "message": "Informe head e base válidos para abrir o pull request governado.",
+        }
 
-    compare = _github_compare_branches(repo, base, head)
+    head_sha, head_body = _github_get_ref_sha(repo, head)
+    if not head_sha:
+        return {
+            "handled": True,
+            "success": False,
+            "provider": "github",
+            "repo": repo,
+            "branch": head,
+            "base_branch": base,
+            "branch_created": False,
+            "compare_ok": False,
+            "message": f"A branch '{head}' não foi encontrada ou ainda não ficou verificável no GitHub.",
+        }
+
+    base_sha, base_body = _github_get_ref_sha(repo, base)
+    if not base_sha:
+        return {
+            "handled": True,
+            "success": False,
+            "provider": "github",
+            "repo": repo,
+            "branch": head,
+            "base_branch": base,
+            "branch_created": True,
+            "compare_ok": False,
+            "message": f"A branch base '{base}' não foi encontrada no repositório configurado.",
+        }
+
+    compare = _github_compare_branches_with_retry(repo, base, head, retries=3, delay_seconds=0.45)
     if not compare.get("ok"):
         return {
             "handled": True,
@@ -9369,6 +9577,10 @@ def _github_create_pull_request_capability(*, head: str, base: str, title: str, 
             "repo": repo,
             "branch": head,
             "base_branch": base,
+            "branch_created": True,
+            "compare_ok": False,
+            "head_sha": head_sha,
+            "base_sha": base_sha,
             "message": "Não foi possível validar o diff entre as branches antes de criar o pull request.",
         }
 
@@ -9380,6 +9592,10 @@ def _github_create_pull_request_capability(*, head: str, base: str, title: str, 
             "repo": repo,
             "branch": head,
             "base_branch": base,
+            "branch_created": True,
+            "compare_ok": True,
+            "ahead_by": int(compare.get("ahead_by") or 0),
+            "files_count": int(compare.get("files_count") or 0),
             "message": f"A branch '{head}' não possui diferenças em relação a '{base}'. Faça pelo menos um commit antes de abrir o pull request.",
         }
 
@@ -9402,14 +9618,16 @@ def _github_create_pull_request_capability(*, head: str, base: str, title: str, 
                 number=existing_pr.get("pull_request_number") or 0,
                 trace_id=trace_id or "",
             )
+            existing_pr["compare_ok"] = True
+            existing_pr["branch_created"] = True
             return _github_action_cache_put(cache_key, existing_pr)
         _github_log("GITHUB_PR_FAILED", repo=repo, head=head, base=base, status=status, trace_id=trace_id or "")
-        return {"handled": True, "success": False, "provider": "github", "repo": repo, "branch": head, "base_branch": base, "message": msg}
+        return {"handled": True, "success": False, "provider": "github", "repo": repo, "branch": head, "base_branch": base, "compare_ok": True, "branch_created": True, "message": msg}
     number = int((resp_body or {}).get("number") or 0)
     html_url = str((resp_body or {}).get("html_url") or "").strip()
     pr_title = str((resp_body or {}).get("title") or title).strip()
     _github_log("GITHUB_PR_VERIFY_OK", repo=repo, head=head, base=base, number=number, trace_id=trace_id or "")
-    result = {"handled": True, "success": True, "provider": "github", "repo": repo, "branch": head, "base_branch": base, "pull_request_number": number, "pull_request_url": html_url, "title": pr_title, "message": "Pull request criado com confirmação operacional verificável."}
+    result = {"handled": True, "success": True, "provider": "github", "repo": repo, "branch": head, "base_branch": base, "pull_request_number": number, "pull_request_url": html_url, "title": pr_title, "branch_created": True, "compare_ok": True, "ahead_by": int(compare.get("ahead_by") or 0), "files_count": int(compare.get("files_count") or 0), "message": "Pull request aberto com confirmação operacional verificável."}
     return _github_action_cache_put(cache_key, result)
 
 def _normalize_orion_runtime_execution_result(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -9800,15 +10018,40 @@ def _dispatch_governed_github_write(
             if blocked:
                 return blocked
             pr_req = _extract_github_create_pr_request(user_text) or {}
+            preflight = _github_open_pr_preflight_from_receipts(
+                org=org,
+                thread_id=thread_id,
+                payload=payload,
+                pr_req=pr_req,
+            )
+            if not preflight.get("ready"):
+                return {
+                    "text": _github_build_transaction_incomplete_text(
+                        org=org,
+                        thread_id=thread_id,
+                        payload=payload,
+                        missing=list(preflight.get("missing") or []),
+                    ),
+                    "execution_result": None,
+                }
             normalized = _github_create_pull_request_capability(
-                head=str(pr_req.get("head") or "").strip(),
-                base=str(pr_req.get("base") or "").strip(),
-                title=str(pr_req.get("title") or "").strip(),
-                body=str(pr_req.get("body") or "").strip() or None,
+                head=str(preflight.get("head") or "").strip(),
+                base=str(preflight.get("base") or "").strip(),
+                title=str(preflight.get("title") or "").strip(),
+                body=str(preflight.get("body") or "").strip() or None,
                 trace_id=trace,
             )
 
         if isinstance(normalized, dict) and normalized.get("handled"):
+            if normalized.get("success"):
+                receipts = _github_write_store_execution_receipts(
+                    org=org,
+                    thread_id=thread_id,
+                    payload=payload,
+                    result=normalized,
+                )
+                normalized = dict(normalized)
+                normalized["transaction_receipts"] = receipts
             return {"text": None, "execution_result": normalized}
 
     except HTTPException as e:
