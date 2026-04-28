@@ -135,6 +135,25 @@ _GITHUB_READ_TERMS = [
     "list files",
 ]
 
+_GITHUB_AUTH_TERMS = [
+    "autorizo",
+    "confirmo",
+    "aprovo",
+    "não autorizo merge",
+    "nao autorizo merge",
+]
+
+_GITHUB_AUTH_ACTION_TERMS = [
+    "branch",
+    "patch",
+    "arquivo",
+    "file",
+    "commit",
+    "pr",
+    "pull request",
+    "main",
+]
+
 # =========================
 # Squad + Audit Detection
 # =========================
@@ -384,6 +403,23 @@ def _detect_runtime_operation(text: str) -> Dict[str, Any]:
             "target_agent": "orion",
             "mode": "execute",
             "prepare_only": True,
+        }
+
+    github_auth_hit = _contains_any(txt, _GITHUB_AUTH_TERMS) and _contains_any(txt, _GITHUB_AUTH_ACTION_TERMS)
+    if github_auth_hit:
+        return {
+            "kind": "github_runtime_write",
+            "target_agent": "orion",
+            "mode": "execute",
+            "requires_capability": "github_repo_write",
+            "response_profile": "github_governed_write",
+            "delivery_contract": "github_governed_write_v1",
+            "approval_required_expected": True,
+            "human_confirmation_required": True,
+            "transactional_flow_required": True,
+            "transactional_flow": "branch_commit_pr",
+            "receipt_required_steps": ["branch_created", "files_written", "commit_created", "compare_ok", "pull_request_opened"],
+            "human_approval_source": "chat",
         }
 
     github_hit = _contains_any(txt, _GITHUB_RUNTIME_TERMS)
