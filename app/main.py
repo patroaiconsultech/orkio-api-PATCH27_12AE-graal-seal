@@ -997,6 +997,7 @@ def _github_open_pr_preflight_from_receipts(
     base = str(pr_req.get("base") or receipts.get("base_branch") or default_branch).strip() or default_branch
     title = str(pr_req.get("title") or "").strip()
     body = str(pr_req.get("body") or "").strip()
+    repo_target = str(pr_req.get("repo_target") or receipts.get("repo") or "").strip()
     missing: List[str] = []
     if not bool(receipts.get("branch_created")) and not head:
         missing.append("branch_created")
@@ -1231,9 +1232,9 @@ def _is_production_env() -> bool:
     return _app_env() == "production"
 
 APP_VERSION = "2.4.0"
-PATCH_SENTINEL = "CONTROLLED_SELF_EVOLUTION_SENTINEL_12BH_V1"
-PATCH_FEATURE = "controlled_self_evolution_propose_only"
-PATCH_EXPECTED_BEHAVIOR = "propose_only_backlog_selection_without_github_write"
+PATCH_SENTINEL = "FRONTEND_REPO_EMISSION_SENTINEL_12BI_V1"
+PATCH_FEATURE = "frontend_repo_target_hard_binding_and_proposal_file_emission"
+PATCH_EXPECTED_BEHAVIOR = "frontend_repo_hard_binding_and_proposal_patch_file_emission"
 RAG_MODE = "keyword"
 
 def patch_id() -> str:
@@ -7568,7 +7569,7 @@ def _extract_github_create_file_request(user_text: str) -> Optional[Dict[str, st
     payload: Dict[str, str] = {"path": path, "content": content}
     if branch:
         payload["branch"] = branch
-    return payload
+    return _github_attach_repo_target(payload, txt)
 
 
 
@@ -7702,7 +7703,7 @@ def _extract_github_update_file_request(user_text: str) -> Optional[Dict[str, st
     payload: Dict[str, str] = {"path": path, "content": content, "mode": mode}
     if branch:
         payload["branch"] = branch
-    return payload
+    return _github_attach_repo_target(payload, txt)
 
 
 
@@ -7752,7 +7753,7 @@ def _extract_github_create_pr_request(user_text: str) -> Optional[Dict[str, str]
     payload: Dict[str, str] = {"head": head, "base": base, "title": title}
     if body:
         payload["body"] = body
-    return payload
+    return _github_attach_repo_target(payload, txt)
 
 def _extract_github_batch_update_request(user_text: str) -> Optional[Dict[str, Any]]:
     txt = (user_text or "").strip()
@@ -7802,7 +7803,7 @@ def _extract_github_batch_update_request(user_text: str) -> Optional[Dict[str, A
     result: Dict[str, Any] = {"changes": changes, "title": title}
     if branch:
         result["branch"] = branch
-    return result
+    return _github_attach_repo_target(result, txt)
 
 def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     if not result:
@@ -8474,11 +8475,9 @@ def _build_execution_result_payload(result: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _github_create_file_capability(*, path: str, content: str, branch: Optional[str] = None, trace_id: Optional[str] = None) -> Dict[str, Any]:
-    repo = _clean_env(os.getenv("GITHUB_REPO", ""))
-    default_branch = _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main"
-    branch = (_clean_env(branch or "", default="") or default_branch)
-    token = _github_token_value()
+def _github_create_file_capability(*, path: str, content: str, branch: Optional[str] = None, repo_target: Optional[str] = None, user_text: Optional[str] = None, trace_id: Optional[str] = None) -> Dict[str, Any]:
+    repo, default_branch, token, repo_kind = _github_resolve_repo_branch(branch=branch, repo_target=repo_target, user_text=user_text)
+    branch = default_branch
     cache_key = _github_action_cache_key(
         "create_file",
         repo,
@@ -8581,6 +8580,7 @@ def _github_create_file_capability(*, path: str, content: str, branch: Optional[
         "sha": verified_sha,
         "size_bytes": size_bytes,
         "trace_id": trace_id,
+        "repo_kind": repo_kind,
         "message": "Arquivo criado com confirmação operacional verificável.",
     }
     return _github_action_cache_put(cache_key, result)
@@ -8621,10 +8621,8 @@ def _github_wants_pr(user_text: str) -> bool:
         return False
     return any(k in low for k in ("pull request", "abrir pr", "abra pr", "open pr", "crie pr", "create pr"))
 
-def _github_create_branch_capability(*, branch: str, trace_id: Optional[str] = None) -> Dict[str, Any]:
-    repo = _clean_env(os.getenv("GITHUB_REPO", ""))
-    base_branch = _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main"
-    token = _github_token_value()
+def _github_create_branch_capability(*, branch: str, repo_target: Optional[str] = None, user_text: Optional[str] = None, trace_id: Optional[str] = None) -> Dict[str, Any]:
+    repo, base_branch, token, repo_kind = _github_resolve_repo_branch(repo_target=repo_target, user_text=user_text)
 
     branch = re.sub(r"^refs/heads/", "", (branch or "").strip())
     if not branch:
@@ -8757,6 +8755,7 @@ def _github_create_branch_capability(*, branch: str, trace_id: Optional[str] = N
         "verified_ref": verified_ref or f"refs/heads/{branch}",
         "commit_sha": created_sha,
         "trace_id": trace_id,
+        "repo_kind": repo_kind,
         "message": "Branch criada com confirmação operacional verificável.",
     }
 
@@ -8777,11 +8776,60 @@ _GITHUB_SEARCH_FILE_LIMIT = 24
 _GITHUB_SEARCH_SNIPPET_LIMIT = 20
 
 
-def _github_resolve_repo_branch(branch: Optional[str] = None) -> tuple[str, str, str]:
-    repo = _clean_env(os.getenv("GITHUB_REPO", ""))
+def _github_backend_repo() -> str:
+    return _clean_env(os.getenv("GITHUB_REPO", ""))
+
+
+def _github_frontend_repo() -> str:
+    return _clean_env(os.getenv("GITHUB_REPO_WEB", ""))
+
+
+def _github_extract_repo_target(user_text: str, repo_target: Optional[str] = None) -> Dict[str, str]:
+    explicit = _clean_env(repo_target or "", default="")
+    backend = _github_backend_repo()
+    frontend = _github_frontend_repo()
+    low = (user_text or "").strip().lower()
+
+    if explicit:
+        if frontend and explicit.lower() == frontend.lower():
+            return {"repo": frontend, "kind": "frontend"}
+        if backend and explicit.lower() == backend.lower():
+            return {"repo": backend, "kind": "backend"}
+        if explicit.lower() in {"frontend", "web", "ui"} and frontend:
+            return {"repo": frontend, "kind": "frontend"}
+        if explicit.lower() in {"backend", "api"} and backend:
+            return {"repo": backend, "kind": "backend"}
+
+    if frontend and frontend.lower() in low:
+        return {"repo": frontend, "kind": "frontend"}
+    if backend and backend.lower() in low:
+        return {"repo": backend, "kind": "backend"}
+
+    scope = _github_guess_scope_from_text(user_text or "")
+    if scope == "frontend" and frontend:
+        return {"repo": frontend, "kind": "frontend"}
+    if scope == "backend" and backend:
+        return {"repo": backend, "kind": "backend"}
+
+    if backend:
+        return {"repo": backend, "kind": "backend"}
+    if frontend:
+        return {"repo": frontend, "kind": "frontend"}
+    return {"repo": "", "kind": "repo"}
+
+
+def _github_resolve_repo_branch(
+    branch: Optional[str] = None,
+    *,
+    repo_target: Optional[str] = None,
+    user_text: Optional[str] = None,
+) -> tuple[str, str, str, str]:
+    target = _github_extract_repo_target(user_text or "", repo_target=repo_target)
+    repo = str(target.get("repo") or "").strip()
+    repo_kind = str(target.get("kind") or "repo").strip() or "repo"
     resolved_branch = (_clean_env(branch or "", default="") or _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main")
     token = _github_token_value()
-    return repo, resolved_branch, token
+    return repo, resolved_branch, token, repo_kind
 
 
 def _github_safe_path(path: str) -> bool:
@@ -8814,6 +8862,70 @@ def _github_guess_scope_from_text(user_text: str) -> str:
     if any(x in low for x in ["backend", "api", "fastapi", "python"]):
         return "backend"
     return "repo"
+
+
+def _github_repo_target_from_text(user_text: str) -> Optional[str]:
+    target = _github_extract_repo_target(user_text or "")
+    repo = str(target.get("repo") or "").strip()
+    return repo or None
+
+
+def _github_attach_repo_target(payload: Optional[Dict[str, Any]], user_text: str) -> Dict[str, Any]:
+    data = dict(payload or {})
+    repo_target = _github_repo_target_from_text(user_text)
+    if repo_target:
+        data["repo_target"] = repo_target
+    return data
+
+
+def _looks_like_empty_state_premium_patch_request(user_text: str) -> bool:
+    low = (user_text or "").strip().lower()
+    if not low:
+        return False
+    markers = (
+        "empty state premium",
+        "primeira vitória guiada",
+        "primeira vitoria guiada",
+        "empty state",
+        "appconsole",
+    )
+    return any(marker in low for marker in markers) and any(
+        scope in low for scope in ("frontend", "web", "react", "ui", "orkio-web")
+    )
+
+
+def _build_empty_state_premium_frontend_scaffold_changes(*, branch: Optional[str] = None) -> Dict[str, Any]:
+    branch_value = (_clean_env(branch or "", default="") or _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main")
+    repo_target = _github_frontend_repo() or _github_backend_repo()
+    changes = [
+        {
+            "path": "src/components/console/EmptyStatePremium.jsx",
+            "mode": "replace",
+            "content": """import React from \"react\";\n\nexport default function EmptyStatePremium({\n  title = \"Seu próximo avanço começa aqui\",\n  subtitle = \"Acione uma primeira vitória guiada, com clareza, controle humano e acabamento premium.\",\n  primaryLabel = \"Iniciar primeira ação guiada\",\n  secondaryLabel = \"Ver capacidades da plataforma\",\n  onPrimaryAction,\n  onSecondaryAction,\n  recommendedStep = \"Acionar Orion para validar a próxima melhoria em modo governado.\",\n}) {\n  return (\n    <section className=\"rounded-3xl border border-white/10 bg-white/5 p-6 shadow-[0_24px_80px_rgba(0,0,0,0.35)] backdrop-blur-xl\">\n      <div className=\"mb-4 flex items-center gap-2 text-xs uppercase tracking-[0.22em] text-cyan-300\">\n        <span className=\"inline-flex h-2 w-2 rounded-full bg-cyan-300\" />\n        Premium First Win\n      </div>\n      <h2 className=\"text-2xl font-semibold text-white\">{title}</h2>\n      <p className=\"mt-3 max-w-2xl text-sm leading-6 text-white/70\">{subtitle}</p>\n      <div className=\"mt-6 grid gap-3 md:grid-cols-[1fr_auto_auto]\">\n        <div className=\"rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white/75\">\n          Próximo passo recomendado: <strong className=\"text-white\">{recommendedStep}</strong>\n        </div>\n        <button type=\"button\" onClick={onPrimaryAction} className=\"rounded-2xl bg-white px-5 py-3 text-sm font-medium text-black transition hover:opacity-90\">\n          {primaryLabel}\n        </button>\n        <button type=\"button\" onClick={onSecondaryAction} className=\"rounded-2xl border border-white/15 px-5 py-3 text-sm font-medium text-white/85 transition hover:bg-white/5\">\n          {secondaryLabel}\n        </button>\n      </div>\n    </section>\n  );\n}\n"""
+        },
+        {
+            "path": "src/components/chat/ChatTopbar.jsx",
+            "mode": "replace",
+            "content": """import React from \"react\";\n\nexport default function ChatTopbar({ title = \"Orkio Console\", objective = \"Primeira vitória guiada\", humanControl = true }) {\n  return (\n    <header className=\"mb-4 rounded-3xl border border-white/10 bg-white/5 px-5 py-4 backdrop-blur-xl\">\n      <div className=\"flex flex-wrap items-center justify-between gap-3\">\n        <div>\n          <div className=\"text-xs uppercase tracking-[0.24em] text-white/45\">Console premium</div>\n          <h1 className=\"mt-1 text-lg font-semibold text-white\">{title}</h1>\n        </div>\n        <div className=\"rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs text-emerald-200\">\n          {humanControl ? \"Controle humano ativo\" : \"Fluxo assistido\"}\n        </div>\n      </div>\n      <p className=\"mt-3 text-sm text-white/65\">Objetivo atual: {objective}</p>\n    </header>\n  );\n}\n"""
+        },
+        {
+            "path": "src/components/chat/MessageComposer.jsx",
+            "mode": "replace",
+            "content": """import React from \"react\";\n\nexport default function MessageComposer({\n  value,\n  onChange,\n  onSubmit,\n  disabled = false,\n  placeholder = \"Digite sua próxima instrução com clareza...\",\n}) {\n  return (\n    <form className=\"mt-4 rounded-3xl border border-white/10 bg-black/20 p-3 backdrop-blur-xl\" onSubmit={onSubmit}>\n      <div className=\"flex flex-col gap-3 md:flex-row\">\n        <textarea\n          value={value}\n          onChange={onChange}\n          disabled={disabled}\n          placeholder={placeholder}\n          rows={3}\n          className=\"min-h-[72px] flex-1 resize-none rounded-2xl border border-white/10 bg-transparent px-4 py-3 text-sm text-white outline-none placeholder:text-white/35\"\n        />\n        <button type=\"submit\" disabled={disabled} className=\"rounded-2xl bg-cyan-300 px-5 py-3 text-sm font-semibold text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50\">\n          Enviar\n        </button>\n      </div>\n    </form>\n  );\n}\n"""
+        },
+        {
+            "path": "docs/PATCH27_EMPTY_STATE_PREMIUM_FRONTEND.md",
+            "mode": "replace",
+            "content": """# PATCH27 Empty State Premium Frontend\n\nEste scaffold prepara a camada visual premium inicial em arquivos isolados e de baixo risco.\n\n## Entregas\n- EmptyStatePremium.jsx\n- ChatTopbar.jsx\n- MessageComposer.jsx\n\n## Próximo passo seguro\nIntegrar os componentes ao AppConsole existente em uma PR governada, preservando autenticação, chat e streaming.\n""" 
+        },
+    ]
+    return {
+        "repo_target": repo_target,
+        "branch": branch_value,
+        "title": "PATCH27 empty state premium frontend scaffold",
+        "changes": changes,
+        "summary": "Scaffold frontend premium emitido de forma governada para permitir branch/write/PR no repositório web com baixo risco.",
+    }
 
 
 def _github_guess_module_name(user_text: str) -> str:
@@ -9487,6 +9599,7 @@ def _github_module_audit_capability(*, module_name: str, branch: Optional[str] =
         "verified_ref": verified_ref or f"refs/heads/{branch}",
         "commit_sha": created_sha,
         "trace_id": trace_id,
+        "repo_kind": repo_kind,
         "message": "Branch criada com confirmação operacional verificável.",
     }
 
@@ -9517,10 +9630,8 @@ def _github_list_files_capability(*, branch: str, trace_id: Optional[str] = None
     files = [f for f in files if f]
     return {"handled": True, "success": True, "provider": "github", "repo": repo, "branch": branch, "files": files, "message": "Arquivos listados com confirmação operacional."}
 
-def _github_update_file_capability(*, path: str, content: str, branch: Optional[str] = None, mode: str = "replace", trace_id: Optional[str] = None) -> Dict[str, Any]:
-    repo = _clean_env(os.getenv("GITHUB_REPO", ""))
-    branch = (_clean_env(branch or "", default="") or _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main")
-    token = _github_token_value()
+def _github_update_file_capability(*, path: str, content: str, branch: Optional[str] = None, repo_target: Optional[str] = None, user_text: Optional[str] = None, mode: str = "replace", trace_id: Optional[str] = None) -> Dict[str, Any]:
+    repo, branch, token, repo_kind = _github_resolve_repo_branch(branch=branch, repo_target=repo_target, user_text=user_text)
     cache_key = _github_action_cache_key(
         "update_file",
         repo,
@@ -9587,7 +9698,7 @@ def _github_update_file_capability(*, path: str, content: str, branch: Optional[
 
     verified_sha = (((verify_body or {}).get("sha") or "").strip()) or commit_sha
     _github_log("GITHUB_UPDATE_VERIFY_OK", repo=repo, branch=branch, path=path, sha=verified_sha, trace_id=trace_id or "")
-    result = {"handled": True, "success": True, "provider": "github", "repo": repo, "branch": branch, "path": path, "commit_sha": verified_sha, "message": "Arquivo atualizado com confirmação operacional verificável."}
+    result = {"handled": True, "success": True, "provider": "github", "repo": repo, "branch": branch, "path": path, "commit_sha": verified_sha, "repo_kind": repo_kind, "message": "Arquivo atualizado com confirmação operacional verificável."}
     return _github_action_cache_put(cache_key, result)
 
 def _github_compare_branches(repo: str, base: str, head: str) -> Dict[str, Any]:
@@ -9638,10 +9749,8 @@ def _github_get_commit_tree_sha(repo: str, commit_sha: str) -> tuple[str, Dict[s
     return tree_sha, body
 
 
-def _github_commit_batch_capability(*, changes: List[Dict[str, str]], branch: Optional[str] = None, title: Optional[str] = None, trace_id: Optional[str] = None) -> Dict[str, Any]:
-    repo = _clean_env(os.getenv("GITHUB_REPO", ""))
-    branch = (_clean_env(branch or "", default="") or _clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main")
-    token = _github_token_value()
+def _github_commit_batch_capability(*, changes: List[Dict[str, str]], branch: Optional[str] = None, repo_target: Optional[str] = None, user_text: Optional[str] = None, title: Optional[str] = None, trace_id: Optional[str] = None) -> Dict[str, Any]:
+    repo, branch, token, repo_kind = _github_resolve_repo_branch(branch=branch, repo_target=repo_target, user_text=user_text)
     if not _github_write_runtime_enabled():
         return {"handled": True, "success": False, "provider": "github", "message": "GitHub write runtime desabilitado por ambiente."}
     if branch == (_clean_env(os.getenv("GITHUB_BRANCH", "main"), default="main") or "main") and not _github_safe_main_write_allowed():
@@ -9743,9 +9852,8 @@ def _github_commit_batch_capability(*, changes: List[Dict[str, str]], branch: Op
         "message": "Commit em lote executado com confirmação operacional.",
     }
 
-def _github_create_pull_request_capability(*, head: str, base: str, title: str, body: Optional[str] = None, trace_id: Optional[str] = None) -> Dict[str, Any]:
-    repo = _clean_env(os.getenv("GITHUB_REPO", ""))
-    token = _github_token_value()
+def _github_create_pull_request_capability(*, head: str, base: str, title: str, repo_target: Optional[str] = None, user_text: Optional[str] = None, body: Optional[str] = None, trace_id: Optional[str] = None) -> Dict[str, Any]:
+    repo, _, token, repo_kind = _github_resolve_repo_branch(repo_target=repo_target, user_text=user_text)
     head = re.sub(r"^refs/heads/", "", (head or "").strip())
     base = re.sub(r"^refs/heads/", "", (base or "").strip())
     cache_key = _github_action_cache_key(
@@ -10337,7 +10445,12 @@ def _dispatch_governed_github_write(
                 if m_branch_force:
                     branch_name = str(m_branch_force.group(2) or "").strip().rstrip(".,;:)")
             branch_name = branch_name or _github_generated_branch_name("sandbox/sanity")
-            normalized = _github_create_branch_capability(branch=branch_name, trace_id=trace)
+            normalized = _github_create_branch_capability(
+                branch=branch_name,
+                repo_target=str(branch_req.get("repo_target") or "").strip() or None,
+                user_text=user_text,
+                trace_id=trace,
+            )
 
         elif req_flags.get("create_file"):
             blocked = _ensure_allowed("create_file", "write_file", "apply_patch")
@@ -10350,6 +10463,8 @@ def _dispatch_governed_github_write(
                 path=str(create_req.get("path") or "").strip(),
                 content=str(create_req.get("content") or ""),
                 branch=str(create_req.get("branch") or "").strip() or None,
+                repo_target=str(create_req.get("repo_target") or "").strip() or None,
+                user_text=user_text,
                 trace_id=trace,
             )
 
@@ -10367,6 +10482,8 @@ def _dispatch_governed_github_write(
                 path=str(update_req.get("path") or "").strip(),
                 content=str(update_req.get("content") or ""),
                 branch=str(update_req.get("branch") or "").strip() or None,
+                repo_target=str(update_req.get("repo_target") or "").strip() or None,
+                user_text=user_text,
                 mode=str(update_req.get("mode") or "replace"),
                 trace_id=trace,
             )
@@ -10384,7 +10501,34 @@ def _dispatch_governed_github_write(
             normalized = _github_commit_batch_capability(
                 changes=list(batch_req.get("changes") or []),
                 branch=str(batch_req.get("branch") or "").strip() or None,
+                repo_target=str(batch_req.get("repo_target") or "").strip() or None,
+                user_text=user_text,
                 title=str(batch_req.get("title") or "").strip() or None,
+                trace_id=trace,
+            )
+
+        elif req_flags.get("apply_patch"):
+            blocked = _ensure_allowed("apply_patch", "write_file", "create_file", "update_file", "batch_commit", "prepare_commit")
+            if blocked:
+                return blocked
+            synthetic_batch = None
+            if _looks_like_empty_state_premium_patch_request(user_text):
+                branch_hint = str(forced_branch_req.get("branch") or "").strip() or None
+                receipts = _github_write_get_execution_receipts(org, thread_id, payload)
+                synthetic_batch = _build_empty_state_premium_frontend_scaffold_changes(
+                    branch=branch_hint or str(receipts.get("branch") or "").strip() or None,
+                )
+            if not synthetic_batch:
+                return {
+                    "text": "AÇÃO BLOQUEADA PELA POLÍTICA OPERACIONAL.\n- motivo: patch_sem_emissao_de_arquivos\n- detail: nenhum emissor seguro encontrou arquivos concretos para escrever",
+                    "execution_result": None,
+                }
+            normalized = _github_commit_batch_capability(
+                changes=list(synthetic_batch.get("changes") or []),
+                branch=str(synthetic_batch.get("branch") or "").strip() or None,
+                repo_target=str(synthetic_batch.get("repo_target") or "").strip() or None,
+                user_text=user_text,
+                title=str(synthetic_batch.get("title") or "").strip() or None,
                 trace_id=trace,
             )
 
@@ -10413,6 +10557,8 @@ def _dispatch_governed_github_write(
                 head=str(preflight.get("head") or "").strip(),
                 base=str(preflight.get("base") or "").strip(),
                 title=str(preflight.get("title") or "").strip(),
+                repo_target=str(preflight.get("repo_target") or "").strip() or None,
+                user_text=user_text,
                 body=str(preflight.get("body") or "").strip() or None,
                 trace_id=trace,
             )
