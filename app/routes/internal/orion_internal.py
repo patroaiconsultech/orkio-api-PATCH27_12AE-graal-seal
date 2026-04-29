@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/internal/orion", tags=["orion_internal"])
 
-PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BV_V1"
+PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BO_V1"
 PATCH_FEATURE = "github_pr_compare_status_resolver"
 PATCH_EXPECTED_BEHAVIOR = "github_compare_and_pr_status_requests_resolve_with_repo_aliases_natural_compare_and_ok_surface_for_missing_pr"
 
@@ -2672,3 +2672,26 @@ def orion_github_execute(inp: OrionExecuteIn) -> Dict[str, Any]:
 
 def orion_runtime_execute_alias(inp: OrionExecuteIn) -> Dict[str, Any]:
     return orion_runtime_execute(inp)
+
+
+# === ORKIO OBSERVABILITY INTEGRATION ===
+from app.observability.dispatch_persistence import persist_dispatch
+from app.observability.audit_formatter import (
+    format_executive_output,
+    extract_dispatch_receipts,
+    extract_specialist_reports
+)
+
+def _orkio_observability_bridge(result, db=None):
+    try:
+        dispatch = result if isinstance(result, dict) else {}
+        if db:
+            persist_dispatch(dispatch, db)
+
+        return {
+            "executive": format_executive_output(dispatch),
+            "receipts": extract_dispatch_receipts(dispatch),
+            "reports": extract_specialist_reports(dispatch)
+        }
+    except Exception as e:
+        return result
