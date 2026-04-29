@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/internal/orion", tags=["orion_internal"])
 
-PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BO_V1"
+PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BV_V1"
 PATCH_FEATURE = "github_pr_compare_status_resolver"
 PATCH_EXPECTED_BEHAVIOR = "github_compare_and_pr_status_requests_resolve_with_repo_aliases_natural_compare_and_ok_surface_for_missing_pr"
 
