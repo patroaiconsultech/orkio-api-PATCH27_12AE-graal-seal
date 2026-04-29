@@ -1232,7 +1232,7 @@ def _is_production_env() -> bool:
     return _app_env() == "production"
 
 APP_VERSION = "2.4.0"
-PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BK_V1"
+PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BV_V1"
 PATCH_FEATURE = "github_pr_compare_status_resolver"
 PATCH_EXPECTED_BEHAVIOR = "github_compare_and_pr_status_requests_resolve_without_inventory_fallback"
 RAG_MODE = "keyword"
