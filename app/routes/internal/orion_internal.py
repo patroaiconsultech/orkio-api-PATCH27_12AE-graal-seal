@@ -14,9 +14,9 @@ from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/internal/orion", tags=["orion_internal"])
 
-PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BM_V1"
+PATCH_SENTINEL = "PR_COMPARE_STATUS_SENTINEL_12BN_V1"
 PATCH_FEATURE = "github_pr_compare_status_resolver"
-PATCH_EXPECTED_BEHAVIOR = "github_compare_and_pr_status_requests_resolve_with_repo_aliases_natural_compare_and_accept_pr_number_with_or_without_hash"
+PATCH_EXPECTED_BEHAVIOR = "github_compare_and_pr_status_requests_resolve_with_repo_aliases_natural_compare_accept_pr_number_without_hash_and_ignore_ambiguous_branch_tokens"
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -271,6 +271,46 @@ def _looks_like_branch_slug(value: str) -> bool:
     return False
 
 
+_BRANCH_NAME_STOPWORDS = {
+    "a",
+    "as",
+    "branch",
+    "branches",
+    "compare",
+    "comparar",
+    "com",
+    "contra",
+    "da",
+    "das",
+    "de",
+    "do",
+    "dos",
+    "e",
+    "na",
+    "no",
+    "para",
+    "pr",
+    "pull",
+    "request",
+    "the",
+    "to",
+    "vs",
+    "versus",
+}
+
+
+def _normalize_branch_candidate(value: str) -> str:
+    candidate = str(value or "").strip().strip(".,:;()[]{}")
+    if not candidate:
+        return ""
+    lowered = candidate.lower()
+    if lowered in _BRANCH_NAME_STOPWORDS:
+        return ""
+    if re.fullmatch(r"#?\d+", candidate):
+        return ""
+    return candidate
+
+
 def _extract_explicit_repo_from_message(message: str) -> str:
     txt = (message or "").strip()
     if not txt:
@@ -358,14 +398,15 @@ def _extract_branch_names_from_message(message: str) -> tuple[str, str]:
     for pat in patterns:
         m = re.search(pat, txt, flags=re.IGNORECASE)
         if m:
-            head = str(m.group(1) or "").strip()
-            base = str(m.group(2) or "").strip()
-            break
+            head = _normalize_branch_candidate(m.group(1))
+            base = _normalize_branch_candidate(m.group(2))
+            if head or base:
+                break
 
     if not head:
         m = re.search(r"branch\s+([A-Za-z0-9_./-]+)", txt, flags=re.IGNORECASE)
         if m:
-            head = str(m.group(1) or "").strip()
+            head = _normalize_branch_candidate(m.group(1))
 
     if not head and (("compare" in txt.lower()) or ("comparar" in txt.lower())):
         slug_match = re.search(
@@ -374,22 +415,22 @@ def _extract_branch_names_from_message(message: str) -> tuple[str, str]:
             flags=re.IGNORECASE,
         )
         if slug_match:
-            head = str(slug_match.group(1) or "").strip()
+            head = _normalize_branch_candidate(slug_match.group(1))
 
     if not base:
         m = re.search(r"(?:contra|com|versus|vs)\s+(?:a\s+)?(?:branch\s+)?([A-Za-z0-9_./-]+)", txt, flags=re.IGNORECASE)
         if m:
-            base = str(m.group(1) or "").strip()
+            base = _normalize_branch_candidate(m.group(1))
 
     if not base:
         m = re.search(r"base(?:_branch)?\s*[:=]?\s*([A-Za-z0-9_./-]+)", txt, flags=re.IGNORECASE)
         if m:
-            base = str(m.group(1) or "").strip()
+            base = _normalize_branch_candidate(m.group(1))
 
     if not base:
         m = re.search(r"\b(main|master|production|prod|develop|dev)\b", txt, flags=re.IGNORECASE)
         if m:
-            base = str(m.group(1) or "").strip()
+            base = _normalize_branch_candidate(m.group(1))
 
     return head, (base or default_branch)
 
@@ -498,8 +539,12 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
             pr_payload = pr_lookup.get("body") if isinstance(pr_lookup.get("body"), dict) else {}
             head_ref = pr_payload.get("head") if isinstance(pr_payload.get("head"), dict) else {}
             base_ref = pr_payload.get("base") if isinstance(pr_payload.get("base"), dict) else {}
-            head = head or str(head_ref.get("ref") or "").strip()
-            base = base or str(base_ref.get("ref") or "").strip() or default_branch
+            resolved_pr_head = _normalize_branch_candidate(head_ref.get("ref"))
+            resolved_pr_base = _normalize_branch_candidate(base_ref.get("ref"))
+            normalized_head = _normalize_branch_candidate(head)
+            normalized_base = _normalize_branch_candidate(base)
+            head = normalized_head or resolved_pr_head
+            base = normalized_base or resolved_pr_base or default_branch
             head_sha = str(head_ref.get("sha") or "").strip()
             pr_url = str(pr_payload.get("html_url") or "").strip()
             merge_executed = bool(pr_payload.get("merged"))
@@ -529,6 +574,9 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
                 "github_error": str(pr_lookup.get("message") or "pull_request_not_found"),
                 "generated_at": _now_ts(),
             }
+
+    head = _normalize_branch_candidate(head)
+    base = _normalize_branch_candidate(base) or default_branch
 
     if not head:
         return {
