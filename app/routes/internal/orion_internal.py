@@ -1003,6 +1003,7 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
     pr_payload: Dict[str, Any] = {}
     pr_url = ""
     merge_executed = False
+    head_sha = ""
 
     if pr_number > 0:
         pr_lookup = _github_pr_by_number(repo_target, pr_number)
@@ -1012,6 +1013,7 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
             base_ref = pr_payload.get("base") if isinstance(pr_payload.get("base"), dict) else {}
             head = head or str(head_ref.get("ref") or "").strip()
             base = base or str(base_ref.get("ref") or "").strip() or default_branch
+            head_sha = str(head_ref.get("sha") or "").strip()
             pr_url = str(pr_payload.get("html_url") or "").strip()
             merge_executed = bool(pr_payload.get("merged"))
         else:
@@ -1043,18 +1045,62 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
 
     if not head:
         return {
-            "ok": False,
+            "ok": True,
             "service": "orion_internal",
             "mode": "github_compare_status",
-            "event": "GITHUB_COMPARE_STATUS_FAILED",
+            "event": "GITHUB_COMPARE_STATUS_INPUT_INVALID",
             "provider": "github",
             "visible_agent": visible_agent,
+            "repo": repo_target,
             "repo_target": repo_target,
+            "backend_repo": _github_repo(),
+            "frontend_repo": _github_repo_web(),
+            "repository_details": repository_details,
+            "pr_number": int(pr_number or 0),
+            "compare_ok": False,
+            "merge_executed": False,
+            "deploy_executed": False,
             "message": "head_branch_not_detected",
+            "expected_input": "compare <head_branch> contra <base_branch> no repo <owner/repo>",
+            "generated_at": _now_ts(),
         }
 
     compare_payload = _github_compare(repo_target, base or default_branch, head)
+    if (not compare_payload.get("ok")) and head_sha:
+        compare_payload = _github_compare(repo_target, base or default_branch, head_sha)
+
     if not compare_payload.get("ok"):
+        if not pr_number:
+            pr_lookup = _github_find_pull_by_head(repo_target, head, base or default_branch)
+            if pr_lookup.get("ok"):
+                pr_payload = pr_lookup.get("body") if isinstance(pr_lookup.get("body"), dict) else {}
+                pr_number = int(pr_payload.get("number") or 0)
+                pr_url = str(pr_payload.get("html_url") or "").strip()
+                merge_executed = bool(pr_payload.get("merged"))
+        if pr_number or pr_url:
+            return {
+                "ok": True,
+                "service": "orion_internal",
+                "mode": "github_compare_status",
+                "event": "GITHUB_COMPARE_STATUS_PARTIAL",
+                "provider": "github",
+                "visible_agent": visible_agent,
+                "repo": repo_target,
+                "repo_target": repo_target,
+                "backend_repo": _github_repo(),
+                "frontend_repo": _github_repo_web(),
+                "repository_details": repository_details,
+                "branch": head,
+                "branch_name": head,
+                "base_branch": base or default_branch,
+                "compare_ok": False,
+                "compare_error": str(compare_payload.get("message") or "compare_failed"),
+                "pr_number": int(pr_number or 0),
+                "pr_url": pr_url,
+                "merge_executed": bool(merge_executed),
+                "deploy_executed": False,
+                "generated_at": _now_ts(),
+            }
         return {
             "ok": False,
             "service": "orion_internal",
@@ -1062,10 +1108,15 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
             "event": "GITHUB_COMPARE_STATUS_FAILED",
             "provider": "github",
             "visible_agent": visible_agent,
+            "repo": repo_target,
             "repo_target": repo_target,
+            "backend_repo": _github_repo(),
+            "frontend_repo": _github_repo_web(),
+            "repository_details": repository_details,
             "branch_name": head,
             "base_branch": base or default_branch,
             "message": str(compare_payload.get("message") or "compare_failed"),
+            "generated_at": _now_ts(),
         }
 
     if not pr_number:
@@ -1102,9 +1153,6 @@ def _github_compare_status_payload(message: str, visible_agent: str, repository_
         "pr_url": pr_url,
         "merge_executed": bool(merge_executed),
         "deploy_executed": False,
-        "merge_not_executed": not bool(merge_executed),
-        "deploy_not_executed": True,
-        "message": "Compare de branch/PR resolvido sem fallback para inventory.",
         "generated_at": _now_ts(),
     }
 
